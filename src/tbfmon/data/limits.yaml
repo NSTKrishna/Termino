@@ -1,0 +1,65 @@
+# =============================================================================
+#  tbfmon permissible limits (warn / alarm) per capacity class and parameter
+#
+#  !!!  EVERY VALUE BELOW IS A PLACEHOLDER — REPLACE WITH OEM VALUES  !!!
+#
+#  Starting points are generic industry references (ISO 10816-3 / ISO 20816-3
+#  for vibration, IEC 60034 insulation class F for winding temperature,
+#  NEMA MG-1 for current imbalance, IEEE 43 for insulation resistance). They
+#  are NOT the OEM's permissible limits for these fans. When you replace an
+#  entry with an OEM/DMRC-approved value, set `placeholder: false` and put the
+#  document reference in `note`.
+#
+#  basis:
+#    absolute           compare the reading directly
+#    pct_of_rated       compare reading / nameplate rating * 100
+#                       (current, inrush -> rated_current_a; voltage -> rated_voltage_v;
+#                        rpm -> rated_rpm; airflow -> rated_airflow_m3s;
+#                        diff pressure -> rated_diff_pressure_pa)
+#    rise_over_ambient  compare reading - ambient_temp_c
+#  Any subset of warn_high / alarm_high / warn_low / alarm_low may be given.
+# =============================================================================
+version: 1
+status: PLACEHOLDER   # REPLACE WITH OEM VALUES, then set to APPROVED
+
+defaults:
+  # --- Vibration: ISO 10816-3 group 2 (15-300 kW), flexible support, zones B/C and C/D
+  vib_de_rms_mms:            {basis: absolute, unit: mm/s, warn_high: 4.5, alarm_high: 7.1, placeholder: true, note: "REPLACE WITH OEM VALUES (ISO 10816-3 grp2 flexible)"}
+  vib_nde_rms_mms:           {basis: absolute, unit: mm/s, warn_high: 4.5, alarm_high: 7.1, placeholder: true, note: "REPLACE WITH OEM VALUES (ISO 10816-3 grp2 flexible)"}
+  # --- Bearing temperature: rise over tunnel ambient (short runs rarely reach steady state)
+  temp_bearing_de_c:         {basis: rise_over_ambient, unit: K, warn_high: 40, alarm_high: 55, placeholder: true, note: "REPLACE WITH OEM VALUES"}
+  temp_bearing_nde_c:        {basis: rise_over_ambient, unit: K, warn_high: 40, alarm_high: 55, placeholder: true, note: "REPLACE WITH OEM VALUES"}
+  # --- Winding: insulation class F (155 °C)
+  temp_winding_c:            {basis: absolute, unit: °C, warn_high: 130, alarm_high: 150, placeholder: true, note: "REPLACE WITH OEM VALUES (class F)"}
+  # --- Electrical
+  current_l1_a:              {basis: pct_of_rated, unit: "%", warn_high: 105, alarm_high: 115, placeholder: true, note: "REPLACE WITH OEM VALUES"}
+  current_l2_a:              {basis: pct_of_rated, unit: "%", warn_high: 105, alarm_high: 115, placeholder: true, note: "REPLACE WITH OEM VALUES"}
+  current_l3_a:              {basis: pct_of_rated, unit: "%", warn_high: 105, alarm_high: 115, placeholder: true, note: "REPLACE WITH OEM VALUES"}
+  current_imbalance_pct:     {basis: absolute, unit: "%", warn_high: 5, alarm_high: 10, placeholder: true, note: "REPLACE WITH OEM VALUES (NEMA MG-1)"}
+  voltage_v:                 {basis: pct_of_rated, unit: "%", warn_low: 95, alarm_low: 90, warn_high: 105, alarm_high: 110, placeholder: true, note: "REPLACE WITH OEM VALUES"}
+  insulation_resistance_mohm: {basis: absolute, unit: MΩ, warn_low: 100, alarm_low: 10, placeholder: true, note: "REPLACE WITH OEM VALUES (IEEE 43 min 5 MΩ random-wound)"}
+  inrush_peak_a:             {basis: pct_of_rated, unit: "%", warn_high: 700, alarm_high: 800, placeholder: true, note: "REPLACE WITH OEM VALUES"}
+  # --- Mechanical / aerodynamic
+  rpm:                       {basis: pct_of_rated, unit: "%", warn_low: 98, alarm_low: 95, placeholder: true, note: "REPLACE WITH OEM VALUES"}
+  airflow_m3s:               {basis: pct_of_rated, unit: "%", warn_low: 90, alarm_low: 80, placeholder: true, note: "REPLACE WITH OEM VALUES"}
+  diff_pressure_pa:          {basis: pct_of_rated, unit: "%", warn_high: 115, alarm_high: 130, placeholder: true, note: "REPLACE WITH OEM VALUES"}
+  runup_time_s:              {basis: absolute, unit: s, warn_high: 15, alarm_high: 20, placeholder: true, note: "REPLACE WITH OEM VALUES (starter dependent)"}
+  coastdown_time_s:          {basis: absolute, unit: s, warn_low: 40, alarm_low: 25, placeholder: true, note: "REPLACE WITH OEM VALUES"}
+  noise_dba:                 {basis: absolute, unit: dB(A), warn_high: 95, alarm_high: 100, placeholder: true, note: "REPLACE WITH OEM VALUES"}
+  # --- Context
+  ambient_temp_c:            {basis: absolute, unit: °C, warn_high: 40, alarm_high: 45, placeholder: true, note: "REPLACE WITH OEM VALUES"}
+
+classes:
+  C30:
+    description: "30 kW reversible booster fan, ~25 m3/s"
+    overrides:
+      noise_dba:        {basis: absolute, unit: dB(A), warn_high: 92, alarm_high: 97, placeholder: true, note: "REPLACE WITH OEM VALUES"}
+      coastdown_time_s: {basis: absolute, unit: s, warn_low: 35, alarm_low: 20, placeholder: true, note: "REPLACE WITH OEM VALUES"}
+  C45:
+    description: "45 kW reversible booster fan, ~35 m3/s"
+    overrides: {}
+  C55:
+    description: "55 kW reversible booster fan, ~42 m3/s"
+    overrides:
+      noise_dba:        {basis: absolute, unit: dB(A), warn_high: 97, alarm_high: 102, placeholder: true, note: "REPLACE WITH OEM VALUES"}
+      coastdown_time_s: {basis: absolute, unit: s, warn_low: 45, alarm_low: 30, placeholder: true, note: "REPLACE WITH OEM VALUES"}

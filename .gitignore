@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+build/
+dist/
+
+# tbfmon workspace: simulator output, ground truth, SQLite DB
+tbfmon_data/
+*.db
+*.sqlite
+*.sqlite3
+
+.DS_Store
