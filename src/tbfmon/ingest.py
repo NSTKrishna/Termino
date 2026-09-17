@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import sqlite3
 from collections import Counter, defaultdict
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -37,8 +37,13 @@ class IngestReport:
         return sum(c.get(outcome, 0) for c in self.by_kind.values())
 
     def to_dict(self) -> dict:
-        d = asdict(self)
-        d["by_kind"] = {k: dict(v) for k, v in self.by_kind.items()}
+        d = {
+            "source": self.source,
+            "by_kind": {k: dict(v) for k, v in self.by_kind.items()},
+            "values_nulled": self.values_nulled,
+            "ignored_columns": self.ignored_columns,
+            "rejected_examples": self.rejected_examples,
+        }
         d["totals"] = {o: self.total(o) for o in ("inserted", "updated", "unchanged", "rejected")}
         return d
 

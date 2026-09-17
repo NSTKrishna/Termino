@@ -87,7 +87,8 @@ src/tbfmon/
   db.py               SQLite schema, connection, upserts, queries
   limits.py           limits.yaml schema, loading, evaluation
   pm.py               OEM PM due/overdue computation
-  validate.py         data-quality and consistency checks
+  validate.py         data-quality and consistency checks; suspect-value rules
+  views.py            plain-data views behind `fleet list` / `fan show`
   ingest.py           source → sanitize → validate → upsert
   sources/            Source protocol + CsvSource, SimulatorSource, MQTT/Modbus stubs
   simulate/           synthetic fleet generator (fleet, faults, generator)
@@ -286,12 +287,29 @@ Global: `tbfmon [--home PATH] <command> … [--json]`
 
 | command | purpose |
 |---|---|
-| `init [--force]` | create home, DB schema, copy default `limits.yaml` |
-| `simulate --fans 40 --years 3 --seed 42 [--start DATE] [--no-ingest]` | generate synthetic CSV bundle + ground truth, then ingest via SimulatorSource |
+| `init [--force]` | create home, DB schema, copy default `limits.yaml` (kept if present unless `--force`) |
+| `simulate --fans 40 --years 3 --seed 42 [--start DATE] [--no-ingest]` | generate synthetic CSV bundle + ground truth, then ingest via SimulatorSource (requires `init`) |
 | `ingest <path> [--kind K]` | ingest a CSV bundle dir or single CSV (idempotent) |
-| `validate [--fail-on-warn]` | limits sanity, referential/temporal checks, isolated spikes, physical consistency, missingness; exit 1 on FAIL |
-| `fleet list [--station S] [--class C] [--status S]` | one row per fan: runs, run-hours, last run, latest limit status, PM overdue, failures |
-| `fan show <id> [--runs N]` | nameplate, latest readings vs limits with trend sparklines, PM schedule due status, maintenance and failure history |
+| `validate [--examples N] [--fail-on-warn] [--as-of D]` | checks below; exit 1 on FAIL (or WARN with `--fail-on-warn`) |
+| `fleet list [--station S] [--class C] [--status S] [--sort id\|status] [--as-of D]` | one row per fan: runs, run-hours, last run, condition, flagged and suspect parameters, OEM PM overdue (and at height), failures |
+| `fan show <id> [--runs N] [--as-of D]` | nameplate, latest readings vs limits with reference and trend sparklines, OEM PM due status, maintenance and failure history |
+
+Exit codes: 0 ok, 1 validation failure / unknown fan, 2 usage or setup error
+(e.g. not initialised, ground truth refused). With `--json`, errors are also
+emitted as `{"error": ...}` on stdout.
+
+`validate` checks: `limits_file` (valid; placeholders ⇒ WARN), `capacity_classes`
+(FAIL if a fan's class has no limits), `fans_without_runs`,
+`fans_without_pm_schedule`, `ingest_nulled_values`, `ingest_rejected_rows`,
+`temporal_consistency` (before install / in the future), `stuck_zero_values`,
+`isolated_spikes` (with hint: spike, decimal shift ×10, looks like °F, stuck
+zero, dropout), `physical_consistency` (RMS < 1×/2× component, bearing/winding
+below ambient, rpm above synchronous, stated vs computed current imbalance),
+`fans_not_run_recently` (>120 days), `failures_without_symptoms`; plus a
+missing-value table per parameter.
+
+Output adapts to terminal width (narrow SSH terminals drop low-priority
+columns rather than cropping); colour is disabled automatically when piped.
 
 ## 7. Key decisions
 
@@ -313,6 +331,24 @@ Global: `tbfmon [--home PATH] <command> … [--json]`
    history unknown).
 7. **Time zone**: naive local time (IST) throughout.
 8. **Units** are fixed per field (see §3); ingestion does not convert units.
+9. **Condition = latest *trustworthy* readings vs limits.** Per parameter, the
+   most recent value within the fan's last 3 runs is used. Values are
+   **SUSPECT** (shown, but excluded from the condition verdict) when they are
+   an isolated spike (disagree with the left *and* right neighbours
+   separately), an unconfirmed newest jump (one-sided test vs the previous
+   runs — re-measure to confirm), a phase current >30 % from the other two
+   phases in the same run, or an exact zero where a running fan cannot read
+   zero. Temperatures are tested as duration-normalised rise over ambient
+   (generic τ = 25 min), IR in log space. Gradual trends are never suspect.
+10. **Repairs reset history.** Corrective maintenance dates split a fan's
+    history for the suspect test: a repair legitimately changes the baseline
+    (e.g. IR after a rewind).
+11. **Reference date (`--as-of`)** defaults to the latest date in the data,
+    not the wall clock, so due/overdue and staleness are meaningful for
+    historical or simulated data; `--as-of today` for live use.
+12. **OEM PM status** is shown as the time-based baseline CBM must beat:
+    per task last done, next due by calendar and by run-hours, OVERDUE /
+    DUE SOON / NO RECORD, and whether it needs work at height.
 
 ## 8. Roadmap (not in this phase)
 
