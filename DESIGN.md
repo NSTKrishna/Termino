@@ -20,8 +20,10 @@ same commit as any change to architecture, schema, commands or decisions.
    storage.
 3. **Ground truth isolation.** The simulator's `ground_truth.csv` is written to a
    separate directory and must never be read by ingestion or any analytics code.
-   Only a future evaluator module may read it. Enforced by
-   `tests/test_ground_truth_isolation.py` and by `CsvSource` refusing the file.
+   Only `tbfmon.evaluation` (`tbfmon evaluate`) may read it. Enforced by
+   `tests/test_ground_truth_isolation.py` (static: which modules may mention it,
+   the engine never imports the evaluator; dynamic: the whole engine runs with
+   every ground-truth file access rigged to fail) and by `CsvSource` refusing it.
 4. **Placeholder limits are marked.** Every permissible limit shipped in
    `limits.yaml` is a placeholder until replaced with OEM values; each carries
    `placeholder: true` and a `REPLACE WITH OEM VALUES` comment. Commands surface
@@ -30,6 +32,10 @@ same commit as any change to architecture, schema, commands or decisions.
    output files. The simulator never uses wall-clock time.
 6. **`--json` on every command** for machine-readable output (stdout only;
    human messages go to stderr in JSON mode).
+7. **Explainable analytics.** Every engine output carries the evidence a
+   maintenance engineer needs: parameter, value, baseline, limit, z-score,
+   reason codes. No single opaque model decides anything.
+8. **Evaluation results are labelled "SIMULATED DATA"** everywhere they appear.
 
 ## 1. Problem summary
 
@@ -49,8 +55,9 @@ same commit as any change to architecture, schema, commands or decisions.
   (thermal steady state often not reached), portable instruments (not every
   parameter every run), manual transcription errors.
 
-This first phase is the **foundation**: data model, storage, synthetic data,
-ingestion, validation and inspection commands. **No ML yet.**
+Phase 1 (foundation): data model, storage, synthetic data, ingestion,
+validation and inspection commands. Phase 2 (this document §9–§10): the
+layered analytics engine, recommender and evaluation.
 
 ## 2. Architecture
 
@@ -71,6 +78,10 @@ ingestion, validation and inspection commands. **No ML yet.**
             └──────────────────────────────┬──────────────────────────────┘
                                            ▼
                         cli.py (Typer) + render.py (Rich tables / --json)
+                                           │
+                 engine/ (layers 0–8, reads DB only) ──► assess / recommend
+                                           │
+                 evaluation/ (only reader of ground truth) ──► evaluate
 
   simulate/ (generator) ──► CSV bundle  <home>/sim/*.csv
                         └─► <home>/ground_truth/ground_truth.csv   (evaluator only)
@@ -92,7 +103,11 @@ src/tbfmon/
   ingest.py           source → sanitize → validate → upsert
   sources/            Source protocol + CsvSource, SimulatorSource, MQTT/Modbus stubs
   simulate/           synthetic fleet generator (fleet, faults, generator)
+  engine/             analytics engine, layers 0–8 (§9) — never reads ground truth
+  evaluation/         `tbfmon evaluate` — the ONLY reader of ground_truth.csv (§10)
+  cli_engine.py       assess / recommend / evaluate commands
   data/limits.yaml    default (placeholder) limits copied by `tbfmon init`
+  data/engine.yaml    engine thresholds, weights and cost assumptions (copied by `init`)
 ```
 
 ### Workspace ("home")
@@ -103,6 +118,7 @@ src/tbfmon/
 tbfmon_data/
   tbfmon.db                       SQLite database
   limits.yaml                     editable copy of permissible limits
+  engine.yaml                     editable engine configuration (§9)
   sim/                            simulator CSV bundle (ingestible)
     fans.csv pm_schedule.csv test_runs.csv maintenance.csv failures.csv
   ground_truth/ground_truth.csv   evaluator only — never ingested
@@ -293,6 +309,9 @@ Global: `tbfmon [--home PATH] <command> … [--json]`
 | `validate [--examples N] [--fail-on-warn] [--as-of D]` | checks below; exit 1 on FAIL (or WARN with `--fail-on-warn`) |
 | `fleet list [--station S] [--class C] [--status S] [--sort id\|status] [--as-of D]` | one row per fan: runs, run-hours, last run, condition, flagged and suspect parameters, OEM PM overdue (and at height), failures |
 | `fan show <id> [--runs N] [--as-of D]` | nameplate, latest readings vs limits with reference and trend sparklines, OEM PM due status, maintenance and failure history |
+| `assess [--fan ID] [--as-of D]` | fleet Health Index table (lowest first), or one fan fully explained: HI penalties, reasons, fault modes (rules/model/combined with reasons), limit check, drift/peer table, anomaly contributors, trends with time-to-ALARM on three axes, recommendation |
+| `recommend [--all] [--as-of D]` | per-fan action, by-date, tasks, work-at-height, reason codes; OEM vs CBM task/man-hour/height-hour comparison over the horizon, with assumptions |
+| `evaluate [--as-of D]` | SIMULATED DATA: detection recall, lead time, false alarms per fan-year, alert precision, per-mode identification; vs threshold-only and OEM baselines (§10) |
 
 Exit codes: 0 ok, 1 validation failure / unknown fan, 2 usage or setup error
 (e.g. not initialised, ground truth refused). With `--json`, errors are also
@@ -350,10 +369,157 @@ columns rather than cropping); colour is disabled automatically when piped.
     per task last done, next due by calendar and by run-hours, OVERDUE /
     DUE SOON / NO RECORD, and whether it needs work at height.
 
-## 8. Roadmap (not in this phase)
+## 8. Phase 2 overview
 
-- Condition indicators & health scoring (baseline-relative, duration-normalised).
-- ML: anomaly detection, fault classification from symptom signatures, RUL.
-- Evaluator (the only reader of `ground_truth.csv`).
-- CBM decision engine: skip/defer/advance OEM PM tasks, esp. work-at-height.
+The analytics engine (§9) sits on top of the foundation and reads only the
+database; `tbfmon evaluate` (§10) scores it against simulator ground truth.
+Open work is in §11.
+
+## 9. Analytics engine (`tbfmon/engine/`)
+
+### Why layers, not one model
+Fans only run during drills and tests: ~4–12 runs per fan per year, most
+parameters not measured every run, and only a handful of recorded failures
+per mode. A single supervised model trained on that would overfit and could
+not be explained. So the engine is a stack of simple, individually
+checkable layers. Each one is useful on its own, and the transparent layers
+(limits, baselines, rules) carry the decisions. ML is used where it adds
+something (multivariate anomaly, extra mode evidence) and is kept from
+overruling what the engineer can see.
+
+All thresholds, weights and cost assumptions are in `engine.yaml`, copied to
+the workspace by `init`. Randomness is fixed by `seed` (IsolationForest,
+RandomForest). The engine reads only the database: runs, maintenance,
+failures, PM schedule, limits.
+
+| layer | module | what it does | output an engineer sees |
+|---|---|---|---|
+| 0 | `clean.py` | causal suspect screening: stuck zero, phase current >30 % from the others, one-sided jump vs the previous accepted values (accepted once the next run confirms it) | `suspect_values` per run; suspect values never drive a verdict |
+| 1 | `limit_check.py` | every reading vs `limits.yaml` | parameter, value, basis, warn/alarm on the relevant side, **% deviation from WARN** (>0 = beyond), OK/WARN/ALARM/SUSPECT |
+| 2 | `features.py` | normalised features: thermal rise over ambient **duration-normalised** to steady state (τ = 25 min; runs <0.2 τ ignored); IR **corrected to 40 °C**, log10; airflow ∝ rpm and ΔP ∝ rpm² (**fan laws**) as % of rating; current % rated; vibration **broadband** √(RMS² − 1ײ − 2ײ); run-up, coast-down, inrush/rated (**start/stop behaviour**); **deltas vs previous run** | feature values + Δ |
+| 3 | `baseline.py` | per-fan baseline = median/MAD of the first 5 values of the segment (≥3 needed); robust z with per-feature noise floors; bad-direction z; **EWMA** (λ 0.3) and one-sided **CUSUM** (k 0.5, h 5); **peer z** vs the other fans of the capacity class (leave-one-out, trailing year, month-start snapshots, causal); sparse parameters carried forward ≤180 days | value, baseline, z, EWMA, CUSUM, drift flag, peer z |
+| 4 | `anomaly.py` | **Isolation Forest per capacity class** on the fan's z-vector (missing ⇒ 0), trained on healthy runs only (below); score = percentile among healthy training runs | percentile, anomalous if ≥0.98, **top contributors by occlusion** |
+| 5a | `rules.py` | **signature rules**: 1× ↑ & dominant → imbalance; 2× or 2×/1× ↑, scatter → misalignment/looseness; broadband ↑ (+temp, noise, coast-down) → bearing wear per bearing; bearing rise ↑ → lubrication loss; IR@40 ↓ (+ current imbalance, winding) → insulation, falling back to current imbalance at 0.7 weight when IR is unmeasured; airflow ↓ / ΔP ↑ (+ current ↓) → airflow restriction | mode, location, confidence, **reasons with values and z** |
+| 5b | `supervised.py` | **RandomForest** (300 trees, depth ≤6, leaf ≥3, class-balanced, native NaN) on z + peer z + scatter; labels from FailureRecords: 1–180 d before a failure = its mode, no failure within a year = healthy, otherwise excluded; **GroupKFold by fan** | class probabilities; warnings for modes with <3 recorded failures |
+| — | `pipeline.py` | combined mode confidence = 0.6·rule + 0.4·model; for modes where the model is unreliable, max(rule, blend), so a weak model can add evidence but never veto a rule | top-3 modes |
+| 6 | `trend.py` | **Theil–Sen** slope (90 % CI) of vib RMS DE/NDE, bearing rise DE/NDE, IR@40, airflow %, current imbalance, coast-down over the last ≤10 runs of the segment vs **calendar days, run-hours and starts**; time-to-ALARM from the class limits with CI; "insufficient data" if <4 runs or <60 days | status, slope, ETA (fast–slow CI) per axis |
+| 7 | `health.py` | **Health Index** = 100 − Σ weight·component: limits 30 (WARN 0.5, ALARM 1), drift 20 (worst bad-dir z/6, +0.25 if EWMA/CUSUM), anomaly 15 ((p−0.5)/0.5), fault mode 15 (top confidence), trend 15 (ETA <90 d 1, <180 d 0.6, <365 d 0.3), peers 5 (worst peer z/6). Status ≥80 Healthy, ≥60 Watch, ≥40 Degraded, else Critical; any ALARM ⇒ Critical, any WARN ⇒ at best Watch | HI, status, per-component penalties, reason codes |
+| 8 | `recommend.py` | Critical → **urgent corrective** (7 d); Degraded, or Watch with a mode ≥0.5 → **targeted inspection of X** (30/60 d, sooner if the trend ETA is close); Healthy with baseline and recent data → **defer OEM PM** for deferrable tasks whose related modes are all <0.5 (≤2× interval since last done); else **no action** (OEM continues). Savings over 365 d: OEM task occurrences vs CBM plan × man-hours (10 h at height, 2 h ground, 8 h inspection, 16 h corrective) | action, by-date, tasks, needs_work_at_height, reason codes, deferred tasks, OEM vs CBM hours |
+
+**Healthy runs** (for layer 4) are defined from records only: not within
+180 d before a recorded failure, 90 d before a corrective repair, or 60 d
+before a PM whose findings contain abnormal keywords (`labels` in engine.yaml).
+
+### Key engine decisions and trade-offs
+1. **Causal everywhere per fan.** Every per-fan statistic at run *i* uses
+   only runs ≤ *i*. This costs some accuracy: the two-sided spike test in
+   `validate` is better, but it looks at the next run. In exchange,
+   `evaluate` is an honest point-in-time replay.
+2. **Repairs reset only what they touch.** Segments are per feature group
+   (`features.MODE_RESETS`): a bearing replacement resets vibration, bearing
+   temperature, noise and start/stop, but not airflow or insulation. A repair
+   with no failure record resets everything. With a full reset, fans were
+   blind for three runs after every repair, and on seed 42 that missed a
+   later imbalance failure.
+3. **Sparse parameters are carried forward** (≤180 d) for rules and HI. IR is
+   measured on ~35 % of runs, and without this the insulation rule almost
+   never fired.
+4. **Rules first, model second.** With 0–5 failures per mode the RandomForest
+   is unreliable. It is shown and blended, but it cannot dilute a rule for a
+   mode it has too little data on. On a 5-year/112-fan simulation (97
+   failures) the model becomes as good as the rules at naming modes; the
+   blend is designed to shift weight as failures accumulate.
+5. **Isolation Forest looks for combinations.** In ~21 dimensions, a single
+   extreme feature is diluted (a lone 12σ value scored only the 90th
+   percentile out of fold). Single-parameter deviations are caught by limits
+   and drift, so IF is not asked to.
+6. **Peers as a fallback (at 70 % weight) and 5 % of HI.** They catch faults
+   that were already present when data started (the baseline contains the
+   fault), but fan-to-fan offsets make them noisy.
+7. **Calendar time drives time-to-ALARM.** Idle fans degrade mainly with time
+   (grease ageing, moisture, dust); run-hours/start trends are reported too.
+8. **Safety bias in recommendations.** Nothing is deferred without an
+   established baseline or with data older than 120 days. IR tests and
+   control/starter checks are never deferred. Prevented-failure benefits are
+   not counted in savings.
+9. **No axial vibration channel** exists in the data model, so misalignment
+   relies on 2× and the 2×/1× ratio only.
+
+## 10. Evaluation (`tbfmon evaluate`) — SIMULATED DATA
+
+Method: the engine runs in `oof` mode. Per-fan layers are causal. Isolation
+Forest and RandomForest score each fan with models trained only on other
+fans (GroupKFold by fan). Those other fans' *full* histories are used, which
+is a mild cross-fan temporal leak, accepted and documented. Per run the
+recommended action is replayed.
+* **Alert** = action is targeted inspection or urgent corrective (a
+  "sensitive" variant alerts on any non-Healthy status).
+* **Detected failure** = an alert on a run on/after onset and strictly
+  before the failure date. **Lead time** = failure − first such alert.
+* **False alarm** = an alert event (consecutive alerting runs) that overlaps
+  no fault episode [onset − 30 d, end]; rate per fan-year.
+* **Fault-mode identification**: per-class precision/recall of the named
+  mode at the first and at the last alert of each detected episode, for
+  rules, model and combined.
+* **Baselines**: threshold-only (any raw reading WARN/ALARM; ALARM-only
+  variant; no suspect screening) and the OEM time-based schedule as
+  simulated (episodes resolved by PM, PM hours, share of visits that found
+  nothing).
+
+### Results at this commit (SIMULATED DATA)
+
+The rules were developed while looking at seed 42. Seed 7 and the large
+fleet were not used for development.
+
+| dataset | system | failures caught | median lead | false alarms / fan-yr | alert precision |
+|---|---|---|---|---|---|
+| seed 42, 40 fans × 3 y | CBM engine | 8/10 | 195 d | 0.11 | 0.52 |
+| | CBM sensitive (Watch+) | 9/10 | 225 d | 0.41 | 0.34 |
+| | threshold WARN/ALARM | 7/10 | 87 d | 0.62 | 0.23 |
+| | threshold ALARM | 5/10 | 91 d | 0.52 | 0.17 |
+| | OEM PM (simulated) | 11/21 episodes caught before failure | — | 7.7 visits, 97 % found nothing | — |
+| seed 7, 40 × 3 (unseen) | CBM engine | 11/19 | 225 d | 0.09 | 0.68 |
+| | threshold WARN/ALARM | 11/19 | 109 d | 0.62 | 0.27 |
+| | OEM PM | 6/25 episodes | — | 8.0 visits | — |
+| seed 2024, 112 × 5 (unseen) | CBM engine | 80/97 | 152 d | 0.08 | 0.74 |
+| | CBM sensitive | 90/97 | 180 d | 0.50 | 0.38 |
+| | threshold WARN/ALARM | 70/97 | 152 d | 0.52 | 0.36 |
+| | OEM PM | 79/176 episodes | — | 7.9 visits, 96 % found nothing | — |
+
+Mode named at the last alert and correct: 92 % (seed 42), 100 % of 11
+named (seed 7), 83 % (112 fans; rules 79 %, model 84 %). Estimated OEM PM
+effort avoided next year by the recommender: 26–40 man-hours per fan-year
+(all of it work at height), against ~2 h/fan-yr of triggered inspections.
+
+### Where it performs badly (be explicit)
+* **Recall is not reliably better than thresholds.** On seed 7 it is equal
+  (11/19). The consistent gains are **~6× fewer false alarms** and, on
+  small fleets, earlier warning.
+* **Lubrication loss** (7/12 caught on the large fleet, mode recall 0.5) and
+  **airflow restriction** (5/7, where thresholds got 6/7; mode recall 0.36)
+  are the weakest modes. Lubrication loss develops in weeks to months
+  between sparse runs. Airflow is measured on <50 % of runs.
+* **Sparse sampling is the hard limit.** Failures preceded by ≤2 runs, or by
+  months without a run, cannot be caught (e.g. TBF-019 on seed 42: no run
+  in the 6 months before failure).
+* **Sudden control-circuit failures** (`other`) have no precursors and are
+  never detected. By design they are excluded from recall.
+* **Early in an episode the mode is often not named** (first-alert naming
+  8–10 of 13 on seed 42). Identification improves as the fault develops.
+* **Run-level supervised precision is low** (0.09–0.49 per mode on the
+  large fleet). The RandomForest is useful only as episode-level evidence
+  and only with many recorded failures.
+* **Faults present before data starts** end up in the fan's baseline; only
+  peers (noisy) can reveal them.
+* **Everything is tuned on synthetic data** whose physics the same author
+  wrote. Real signatures, noise and failure rates will differ, and all
+  limits are placeholders.
+
+## 11. Roadmap
+
+- Replace placeholder limits with OEM values; review engine.yaml thresholds on site data.
+- Weak labels from PM findings (e.g. "grease dry" → lubrication) to enlarge training sets.
+- Measurement-policy advice: which parameters to add to every drill (airflow, IR) for the weakest modes.
+- Axial vibration channel and envelope/spectral features when instruments allow.
 - Exported HTML/Markdown report file (file only, never a running app).
+
