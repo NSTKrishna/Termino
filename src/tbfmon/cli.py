@@ -77,9 +77,9 @@ def main(
 
 
 @app.command()
-def init(ctx: typer.Context, force: bool = typer.Option(False, "--force", help="Overwrite limits.yaml with defaults."),
+def init(ctx: typer.Context, force: bool = typer.Option(False, "--force", help="Overwrite limits.yaml and engine.yaml with defaults."),
          as_json: bool = JsonOpt) -> None:
-    """Create the workspace, SQLite schema and an editable limits.yaml."""
+    """Create the workspace, SQLite schema and editable limits.yaml / engine.yaml."""
     home = _home(ctx)
     home.root.mkdir(parents=True, exist_ok=True)
     conn = db.connect(home.db_path, create=True)
@@ -87,8 +87,13 @@ def init(ctx: typer.Context, force: bool = typer.Option(False, "--force", help="
     wrote_limits = force or not home.limits_path.exists()
     if wrote_limits:
         home.limits_path.write_text(default_limits_text(), encoding="utf-8")
+    wrote_engine = force or not home.engine_config_path.exists()
+    if wrote_engine:
+        from .engine.config import default_engine_text
+        home.engine_config_path.write_text(default_engine_text(), encoding="utf-8")
     result = {"home": str(home.root), "db": str(home.db_path), "limits": str(home.limits_path),
-              "limits_written": wrote_limits, "schema_version": db.SCHEMA_VERSION, "counts": db.counts(conn)}
+              "limits_written": wrote_limits, "engine_config": str(home.engine_config_path),
+              "engine_config_written": wrote_engine, "schema_version": db.SCHEMA_VERSION, "counts": db.counts(conn)}
     if as_json:
         emit_json(result)
         return
@@ -96,6 +101,8 @@ def init(ctx: typer.Context, force: bool = typer.Option(False, "--force", help="
     out.print(f"[green]✓[/] database   {home.db_path} (schema v{db.SCHEMA_VERSION})", soft_wrap=True)
     out.print(f"[green]✓[/] limits     {home.limits_path} "
               + ("(written from defaults)" if wrote_limits else "(kept existing; --force to reset)"), soft_wrap=True)
+    out.print(f"[green]✓[/] engine     {home.engine_config_path} "
+              + ("(written from defaults)" if wrote_engine else "(kept existing; --force to reset)"), soft_wrap=True)
     _placeholder_banner(home)
 
 
@@ -383,6 +390,10 @@ def fan_show(
         out.print("[dim]No failures recorded.[/]")
     _placeholder_banner(home)
 
+
+from .cli_engine import register as _register_engine  # noqa: E402
+
+_register_engine(app)
 
 if __name__ == "__main__":  # pragma: no cover
     app()

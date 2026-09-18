@@ -28,6 +28,10 @@ class Home:
         return self.root / "limits.yaml"
 
     @property
+    def engine_config_path(self) -> Path:
+        return self.root / "engine.yaml"
+
+    @property
     def sim_dir(self) -> Path:
         return self.root / "sim"
 
