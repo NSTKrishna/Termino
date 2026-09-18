@@ -42,3 +42,26 @@ def conn(tmp_path):
     db.init_schema(c)
     yield c
     c.close()
+
+
+@pytest.fixture(scope="session")
+def sim_fleet(tmp_path_factory):
+    """A small simulated fleet loaded the way the engine sees it (never ground truth)."""
+    from tbfmon.engine import load_fleet
+    from tbfmon.ingest import ingest
+    from tbfmon.limits import load_limits
+    from tbfmon.pm import data_as_of
+    from tbfmon.simulate import generate
+    from tbfmon.sources import SimulatorSource
+
+    path = tmp_path_factory.mktemp("fleet") / "t.db"
+    c = db.connect(path, create=True)
+    db.init_schema(c)
+    ingest(c, SimulatorSource(generate(n_fans=20, years=3, seed=11)))
+    return load_fleet(c, load_limits(), data_as_of(c))
+
+
+@pytest.fixture(scope="session")
+def engine_cfg():
+    from tbfmon.engine import load_engine_config
+    return load_engine_config()
