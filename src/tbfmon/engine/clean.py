@@ -8,6 +8,10 @@ judged using only earlier runs, so point-in-time evaluation is honest.
 * unconfirmed  — jumps vs the previous (accepted) values of the same segment;
                  if the *next* value agrees with it, the jump is accepted as real
                  for all later windows (it stays suspect for its own run).
+                 A jump is accepted at once when a physically related parameter in
+                 the same run also moved notably (CORROBORATE, e.g. vibration with
+                 bearing temperature/noise, IR with current imbalance): instrument
+                 glitches hit single values independently, real faults move several.
 """
 
 from __future__ import annotations
@@ -27,6 +31,42 @@ def _scale(values: np.ndarray, p: str) -> tuple[float, float]:
     m = float(np.median(values))
     absf, relf = scale_floors(p)
     return m, max(1.4826 * float(np.median(np.abs(values - m))), absf, relf * abs(m))
+
+
+def _corroboration() -> dict[str, tuple[str, ...]]:
+    c: dict[str, tuple[str, ...]] = {}
+    for pos in ("de", "nde"):
+        vib = tuple(f"vib_{pos}_{k}_mms" for k in ("rms", "1x", "2x"))
+        for v in vib:
+            c[v] = tuple(x for x in vib if x != v) + (f"temp_bearing_{pos}_c", "noise_dba")
+        c[f"temp_bearing_{pos}_c"] = (f"vib_{pos}_rms_mms", "noise_dba", "coastdown_time_s")
+    c["insulation_resistance_mohm"] = ("current_imbalance_pct", "temp_winding_c")
+    c["temp_winding_c"] = ("insulation_resistance_mohm", "current_imbalance_pct")
+    c["current_imbalance_pct"] = ("insulation_resistance_mohm", "temp_winding_c")
+    c["airflow_m3s"] = ("diff_pressure_pa", "current_l1_a", "current_l2_a", "current_l3_a", "noise_dba")
+    c["diff_pressure_pa"] = ("airflow_m3s", "current_l1_a", "noise_dba")
+    c["noise_dba"] = ("vib_de_rms_mms", "vib_nde_rms_mms", "airflow_m3s")
+    c["coastdown_time_s"] = ("temp_bearing_de_c", "temp_bearing_nde_c", "vib_de_rms_mms", "vib_nde_rms_mms")
+    return c
+
+
+CORROBORATE = _corroboration()
+
+
+def _notable(runs: pd.DataFrame, k: float) -> dict[str, pd.Series]:
+    """Per parameter: did the value move notably vs the median of the previous 3 values (causal)?"""
+    out: dict[str, pd.Series] = {}
+    wanted = {q for qs in CORROBORATE.values() for q in qs}
+    for p in wanted:
+        flags = pd.Series(False, index=runs.index)
+        for _, g in runs.groupby(["fan_id", seg_col(PARAM_GROUP.get(p, "vib"))], sort=False):
+            dom = detection_domain(g.sort_values("ts"), p).dropna()
+            vals, idx = dom.to_numpy(), dom.index.to_numpy()
+            for j in range(2, len(vals)):
+                m, s = _scale(vals[max(0, j - 3):j], p)
+                flags[idx[j]] = abs(vals[j] - m) > k * s
+        out[p] = flags
+    return out
 
 
 def clean_runs(runs: pd.DataFrame, cfg: CleaningCfg) -> tuple[pd.DataFrame, dict[int, dict[str, str]]]:
@@ -49,6 +89,8 @@ def clean_runs(runs: pd.DataFrame, cfg: CleaningCfg) -> tuple[pd.DataFrame, dict
         for i in runs.index[bad.fillna(False)]:
             mark(i, p, "inconsistent")
 
+    notable = _notable(out, cfg.corroborate_k)
+
     # One-sided jump test with confirmation, per fan segment.
     for p in MEASUREMENT_FIELDS:
         for _, g in out.groupby(["fan_id", seg_col(PARAM_GROUP.get(p, "vib"))], sort=False):
@@ -68,6 +110,9 @@ def clean_runs(runs: pd.DataFrame, cfg: CleaningCfg) -> tuple[pd.DataFrame, dict
                 if len(accepted) >= 2:
                     m, s = _scale(np.array(accepted[-3:]), p)
                     if abs(x - m) > cfg.spike_k * s:
+                        if any(q in notable and bool(notable[q].get(i, False)) for q in CORROBORATE.get(p, ())):
+                            accepted.append(float(x))  # corroborated by a related parameter: real change
+                            continue
                         mark(i, p, "unconfirmed")
                         pending = (i, float(x), s)
                         continue

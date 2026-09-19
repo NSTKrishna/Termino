@@ -10,7 +10,7 @@ ev = max(e(z_fan), 0.7 · e(z_peer)).
 | impeller_imbalance | 1× ↑ at DE/NDE, and 1× dominates overall RMS | — |
 | misalignment_looseness | 2× ↑ at DE or 2×/1× ↑ | run-to-run scatter, DE temperature ↑ |
 | bearing_wear (per bearing) | broadband ↑ (vibration not explained by 1×/2×) | bearing temp ↑, noise ↑, coast-down ↓ |
-| lubrication_loss (per bearing) | bearing temperature rise ↑ | noise ↑, coast-down ↓ |
+| lubrication_loss (per bearing) | bearing temperature rise ↑ (discounted up to 30 % when broadband vibration at that bearing is high) | noise ↑, coast-down ↓ |
 | insulation_degradation | IR@40 °C ↓ (or IR limit WARN/ALARM); if IR not measured recently, 0.7 × current-imbalance evidence | current imbalance ↑, winding rise ↑ |
 | airflow_restriction | airflow ↓ or ΔP ↑ (at rated speed) | current ↓, noise ↑ |
 
@@ -116,6 +116,8 @@ def score_run(row: pd.Series, limit_status: dict[str, str] | None = None) -> lis
         for loc in ("de", "nde"):
             pf = prim.format(l=loc)
             conf = _combine(ev.ev(pf), [ev.ev(s.format(l=loc)) for s in sup])
+            if mode == "lubrication_loss":  # dry bearings heat first; strong broadband vibration means wear
+                conf *= 1 - 0.3 * ev.ev(f"vib_{loc}_bb")
             if conf > 0 and (best is None or conf > best.confidence):
                 r = [ev.why(pf)] + [ev.why(s.format(l=loc)) for s in sup if ev.ev(s.format(l=loc)) > 0]
                 best = ModeScore(mode, round(conf, 3), loc.upper(), r)

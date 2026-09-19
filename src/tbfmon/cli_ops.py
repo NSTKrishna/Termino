@@ -5,7 +5,10 @@ Rendering only: all logic lives in tbfmon.services (DESIGN.md §12).
 
 from __future__ import annotations
 
+import json
+import time
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Iterator, Optional
 
 import typer
@@ -200,7 +203,86 @@ def render_alert_list(rows: list[dict], ws: Workspace) -> None:
     out.print(t)
 
 
+def _deviations(fan: dict) -> str:
+    devs = [f"{p['label']} {fmt(p['measured'])} {p['status']}" for p in fan["params"] if p["status"] in ("ALARM", "WARN")]
+    sus = [p["label"] for p in fan["params"] if p["status"] == "SUSPECT"]
+    txt = ", ".join(devs)
+    if sus:
+        txt += ("; " if txt else "") + f"[magenta]re-measure: {', '.join(sus)}[/]"
+    return txt or "[green]within limits[/]"
+
+
+def render_fan_rows(fans: list[dict], title: str, file_col: bool = False) -> None:
+    cols = [("#", {"justify": "right"}), "fan", "health", "status", "deviations from specified values",
+            "likely fault", "action"]
+    if file_col:
+        cols.append("file")
+    t = table(title, *cols, box=box.SIMPLE_HEAD, pad_edge=False)
+    for k, f in enumerate(fans, 1):
+        mode = next((f"{m['mode']} {m['confidence'] * 100:.0f}%" for m in f["fault_modes"] if m["confidence"] >= 0.5), "")
+        miss = f"\n[dim]missing: {len(f['missing_sensors'])} sensor group(s)[/]" if f["missing_sensors"] else ""
+        row = [str(k), f["fan_id"], hi_bar(f["health_index"], f["status"], 6, compact=True), health_label(f["status"]),
+               _deviations(f) + miss, mode, action_label(f["recommendation"]["action"])]
+        if file_col:
+            row.append(f.get("_file", ""))
+        t.add_row(*row)
+    out.print(t)
+
+
+def render_drill(res: dict, ws: Workspace) -> None:
+    ing = res["ingest"]["totals"]
+    out.print(Panel(f"[bold]Mock drill — {res['station']}[/]  ·  file {Path(res['file']).name}\n"
+                    f"ingested {ing['inserted']} new, {ing['updated']} updated, {ing['unchanged']} unchanged, "
+                    f"{ing['rejected']} rejected  ·  {len(res['fans'])} fan(s) analysed",
+                    box=box.ROUNDED, expand=False))
+    render_fan_rows(res["fans"], "Risk-sorted summary (highest risk first)")
+    for s in res["skipped"][:5]:
+        out.print(f"  [yellow]skipped[/] {s['row']}: {s['reason']}")
+    if res["unknown_columns"]:
+        out.print(f"  [yellow]ignored unknown columns:[/] {', '.join(res['unknown_columns'])}")
+    for n in res["notes"]:
+        out.print(f"  [dim]note: {n}[/]")
+    if res["alerts"]:
+        out.print("[bold]Alerts[/]")
+        render_outcomes(res["alerts"])
+    else:
+        out.print("[green]No deviations — no alerts raised.[/]")
+
+
 # ---------------------------------------------------------------------- commands
+
+
+def _print_event(d: dict, ws: Workspace) -> None:
+    """Line-oriented output when not attached to a terminal (logs, cron, pipes)."""
+    if not d["ok"]:
+        out.print(f"[{ws.settings.fmt(d['at'])}] {d['file']}: [red]error[/] {d['error']}"
+                  + (f" ({d['hint']})" if d["hint"] else ""))
+        return
+    worst = d["fans"][0] if d["fans"] else None
+    out.print(f"[{ws.settings.fmt(d['at'])}] {d['file']}: {len(d['fans'])} fan(s)"
+              + (f", worst {worst['fan_id']} {health_label(worst['status'])} {worst['health_index']:.0f}" if worst else ""))
+    render_outcomes(d["alerts"])
+
+
+def _watch_view(state: dict, directory: Path, every: float, ws: Workspace):
+    from rich.console import Group
+
+    fans = sorted(state["fans"].values(), key=lambda f: ({"Critical": 0, "Degraded": 1, "Watch": 2, "Healthy": 3}[f["status"]],
+                                                         f["health_index"]))
+    head = Panel(f"watching [bold]{directory}[/] every {every:g}s · polls {state['polls']} · files "
+                 f"{len(state['events'])} · alerts {len(state['alerts'])} · {ws.settings.fmt(ws.settings.now())}  "
+                 "[dim](Ctrl-C to stop)[/]", box=box.ROUNDED)
+    t = table("Latest assessment per fan", "fan", "health", "status", "deviations", "action", "file",
+              box=box.SIMPLE_HEAD, pad_edge=False)
+    for f in fans[:15]:
+        t.add_row(f["fan_id"], hi_bar(f["health_index"], f["status"], 6, compact=True), health_label(f["status"]),
+                  _deviations(f), action_label(f["recommendation"]["action"]), f["_file"])
+    feed = table("Alert feed (newest first)", "severity", "alert", box=box.SIMPLE_HEAD, pad_edge=False)
+    for a in list(reversed(state["alerts"]))[:8]:
+        feed.add_row(severity_label(a["severity"]), f"#{a['alert_id']} {a['title']} — {a['message']}")
+    errors = [e for e in state["events"] if not e["ok"]][-3:]
+    parts = [head, t, feed] + [f"[red]error[/] {e['file']}: {e['error']}" for e in errors]
+    return Group(*parts)
 
 
 def register(app: typer.Typer, fleet_app: typer.Typer) -> None:
@@ -301,6 +383,117 @@ def register(app: typer.Typer, fleet_app: typer.Typer) -> None:
         for r in rows:
             out.print(f"  #{r['id']} {severity_label(r['severity'])} {r['title']}: {r['result']}"
                       + (f" by {r['acked_by']} at {ws.settings.fmt(r['acked_at'])}" if r["acked_at"] else ""))
+
+    @app.command()
+    def drill(
+        ctx: typer.Context,
+        station: str = typer.Option(..., "--station", help="Station name (case-insensitive, partial OK)."),
+        file: Optional[Path] = typer.Option(None, "--file", help="CSV of drill readings (test_runs columns)."),
+        simulate: bool = typer.Option(False, "--simulate", help="Generate realistic drill readings for the station."),
+        inject: Optional[list[str]] = typer.Option(None, "--inject", help="With --simulate: FAN:MODE fault to inject (repeatable)."),
+        seed: Optional[int] = typer.Option(None, "--seed", help="With --simulate: random seed."),
+        as_json: bool = JsonOpt,
+    ) -> None:
+        """Mock-drill mode: ingest, analyse every fan, risk-sorted summary, alert on deviations. Exit 0/1/2."""
+        from .services.drill import run_drill
+
+        with guarded(as_json):
+            ws = open_ws(ctx)
+            res = run_drill(ws, station, file, simulate, inject, seed).to_dict()
+        if as_json:
+            emit_json(res)
+        else:
+            render_drill(res, ws)
+        finish(res["exit_code"])
+
+    @app.command()
+    def watch(
+        ctx: typer.Context,
+        directory: Path = typer.Argument(..., help="Folder where reading CSVs land."),
+        interval: Optional[float] = typer.Option(None, "--interval", help="Polling interval in seconds (config: watch_interval_s)."),
+        once: bool = typer.Option(False, "--once", help="Process files already present, then exit (cron)."),
+        duration: Optional[float] = typer.Option(None, "--duration", help="Stop after this many seconds."),
+        simulate_feed: bool = typer.Option(False, "--simulate-feed", help="Write simulated drill files into the folder (demo)."),
+        feed_count: int = typer.Option(4, "--feed-count", min=1, help="Files the simulated feed writes."),
+        feed_every: float = typer.Option(3.0, "--feed-every", min=0.1, help="Seconds between simulated files."),
+        as_json: bool = JsonOpt,
+    ) -> None:
+        """Watch a folder and alert in real time as reading files arrive. Exit = worst severity seen."""
+        from .services.watch import DirectoryWatcher, FeedSimulator
+
+        with guarded(as_json):
+            ws = open_ws(ctx)
+            directory = directory.expanduser()
+            if simulate_feed:
+                directory.mkdir(parents=True, exist_ok=True)
+            watcher = DirectoryWatcher(ws, directory)
+            every = interval or ws.settings.watch_interval_s
+        feed = None
+        if simulate_feed:
+            home = ctx.obj
+            feed = FeedSimulator(lambda: Workspace.open(home), directory, feed_count, feed_every)
+            feed.start()
+        state = {"events": [], "fans": {}, "alerts": [], "polls": 0, "worst": 0}
+
+        def handle(ev) -> None:
+            d = ev.to_dict()
+            state["events"].append(d)
+            state["worst"] = max(state["worst"], d["exit_code"])
+            for f in d["fans"]:
+                state["fans"][f["fan_id"]] = {**f, "_file": d["file"]}
+            state["alerts"].extend(a for a in d["alerts"] if a["outcome"] in ("new", "escalated"))
+            if as_json:
+                print(json.dumps({"event": "file", **d}, ensure_ascii=False, default=str), flush=True)
+            elif not live_mode:
+                _print_event(d, ws)
+
+        live_mode = out.is_terminal and not as_json and not once
+        start = time.monotonic()
+
+        def done() -> bool:
+            if duration is not None and time.monotonic() - start >= duration:
+                return True
+            if feed is not None and duration is None:
+                return not feed.is_alive() and state["polls"] > 0 and not watcher.ready_peek()
+            return False
+
+        def loop(live=None) -> None:
+            watcher.prime()
+            if once:
+                for ev in watcher.poll():
+                    handle(ev)
+                return
+            while not done():
+                time.sleep(every)
+                for ev in watcher.poll():
+                    handle(ev)
+                state["polls"] += 1
+                if live is not None:
+                    live.update(_watch_view(state, directory, every, ws))
+
+        try:
+            with guarded(as_json):
+                if live_mode:
+                    from rich.live import Live
+                    with Live(_watch_view(state, directory, every, ws), console=out, refresh_per_second=4) as live:
+                        loop(live)
+                else:
+                    if not as_json:
+                        out.print(f"watching {directory} every {every:g}s (Ctrl-C to stop)")
+                    loop()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            if feed is not None:
+                feed.stop_event.set()
+        if feed is not None and feed.error:
+            err.print(f"[yellow]simulated feed stopped: {feed.error}[/]")
+        if as_json:
+            print(json.dumps({"event": "summary", "files": len(state["events"]), "alerts": len(state["alerts"]),
+                              "exit_code": state["worst"]}), flush=True)
+        else:
+            out.print(f"processed {len(state['events'])} file(s), raised {len(state['alerts'])} alert(s)")
+        finish(state["worst"])
 
     @app.command()
     def explain(

@@ -27,6 +27,7 @@ ALLOWED = {
     "simulate/__init__.py",         # re-exports the file name
     "paths.py",                     # workspace layout
     "sources/csv_source.py",        # refuses it
+    "services/watch.py",            # skips it if dropped into a watched folder
     "sources/simulator_source.py",  # documents that it never yields it
     "cli.py",                       # prints where it was written
     "cli_engine.py",                # passes the directory to the evaluator

@@ -15,6 +15,7 @@ features:
 cleaning:                     # causal suspect-value rules (see DESIGN.md §7.9)
   spike_k: 5.0                # |x − median(prev 3)| > k · robust scale  ⇒ unconfirmed jump
   phase_tolerance: 0.30       # a phase >30 % from the median phase ⇒ inconsistent
+  corroborate_k: 3.0          # a jump is real at once if a related parameter moved > k · scale in the same run
 
 baseline:
   n_runs: 5                   # baseline = median/MAD of the first N healthy runs of each segment

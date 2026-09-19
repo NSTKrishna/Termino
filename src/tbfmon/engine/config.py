@@ -21,6 +21,7 @@ class FeaturesCfg(_M):
 class CleaningCfg(_M):
     spike_k: float = 5.0
     phase_tolerance: float = 0.30
+    corroborate_k: float = 3.0
 
 
 class BaselineCfg(_M):
