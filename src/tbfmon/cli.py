@@ -39,7 +39,7 @@ app = typer.Typer(
     no_args_is_help=True, add_completion=False, rich_markup_mode="rich",
     pretty_exceptions_show_locals=False,
 )
-fleet_app = typer.Typer(help="Fleet-wide views.", no_args_is_help=True)
+fleet_app = typer.Typer(help="Fleet-wide views.", no_args_is_help=False)
 fan_app = typer.Typer(help="Single-fan views.", no_args_is_help=True)
 app.add_typer(fleet_app, name="fleet")
 app.add_typer(fan_app, name="fan")
@@ -427,6 +427,10 @@ def fan_show(
 from .cli_engine import register as _register_engine  # noqa: E402
 
 _register_engine(app)
+
+from .cli_ops import register as _register_ops  # noqa: E402
+
+_register_ops(app, fleet_app)
 
 if __name__ == "__main__":  # pragma: no cover
     app()

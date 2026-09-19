@@ -54,8 +54,9 @@ def ws(tmp_path):
 
 def test_workspace_fan_lookup_with_suggestions(ws):
     assert ws.fan_id("tbf-003") == "TBF-003" and ws.fan_id("7") == "TBF-007"
+    assert ws.fan_id("TBF-0O3") == "TBF-003"  # letter O typed for zero
     with pytest.raises(TbfmonError) as e:
-        ws.fan_id("TBF-0O3")
+        ws.fan_id("TBF-003X")
     assert "did you mean" in e.value.hint and "TBF-003" in e.value.hint
 
 

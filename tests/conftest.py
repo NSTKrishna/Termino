@@ -65,3 +65,18 @@ def sim_fleet(tmp_path_factory):
 def engine_cfg():
     from tbfmon.engine import load_engine_config
     return load_engine_config()
+
+
+@pytest.fixture(scope="session")
+def cli_home(tmp_path_factory):
+    """An initialised workspace with a simulated fleet, shared by the operator-command tests."""
+    from typer.testing import CliRunner
+
+    from tbfmon.cli import app
+
+    home = tmp_path_factory.mktemp("cli_home")
+    runner = CliRunner()
+    for args in (["init"], ["simulate", "--fans", "16", "--years", "3", "--seed", "4"]):
+        res = runner.invoke(app, ["--home", str(home), *args])
+        assert res.exit_code == 0, res.output
+    return home

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import difflib
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -70,8 +71,12 @@ class Workspace:
         cand = raw.strip().upper()
         if cand in ids:
             return cand
-        if cand.isdigit():  # "7" → TBF-007
-            num = f"TBF-{int(cand):03d}"
+        cand = re.sub(r"(?<=\d)O|O(?=\d)", "0", cand)  # letter O typed for zero: TBF-0O5
+        if cand in ids:
+            return cand
+        m = re.fullmatch(r"(?:TBF)?[-_ ]?0*(\d+)", cand)  # "7", "tbf-40", "TBF7" → TBF-007 / TBF-040
+        if m:
+            num = f"TBF-{int(m.group(1)):03d}"
             if num in ids:
                 return num
         close = difflib.get_close_matches(cand, ids, n=3, cutoff=0.6)
