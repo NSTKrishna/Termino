@@ -14,7 +14,7 @@ import pandas as pd
 
 from .models import MEASUREMENT_FIELDS, FailureRecord, Fan, MaintenanceRecord, PMTaskRow, TestRun
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _MEAS_COLS = ",\n    ".join(f"{m} REAL" for m in MEASUREMENT_FIELDS)
 
@@ -106,6 +106,30 @@ CREATE TABLE IF NOT EXISTS data_quality_issue (
     detected_at TEXT NOT NULL,
     UNIQUE (entity, entity_key, field, issue)
 );
+CREATE TABLE IF NOT EXISTS alert (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT NOT NULL,
+    fan_id TEXT,
+    severity TEXT NOT NULL,
+    source TEXT NOT NULL,
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    run_ts TEXT,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    occurrences INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'open',
+    acked_by TEXT,
+    acked_at TEXT,
+    ack_note TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_alert_key ON alert(key, status);
+CREATE TABLE IF NOT EXISTS watched_file (
+    path TEXT PRIMARY KEY,
+    size INTEGER NOT NULL,
+    mtime REAL NOT NULL,
+    processed_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS ingest_batch (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source TEXT NOT NULL,
@@ -150,7 +174,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     conn.execute(
         "INSERT INTO meta(key, value) VALUES ('schema_version', ?) "
-        "ON CONFLICT(key) DO NOTHING",
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         (str(SCHEMA_VERSION),),
     )
     conn.commit()
@@ -311,7 +335,7 @@ def issues(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 
 def counts(conn: sqlite3.Connection) -> dict[str, int]:
-    tables: Iterable[str] = ("fan", "pm_task", "test_run", "maintenance", "failure", "data_quality_issue")
+    tables: Iterable[str] = ("fan", "pm_task", "test_run", "maintenance", "failure", "data_quality_issue", "alert")
     return {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables}
 
 

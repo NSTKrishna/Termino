@@ -65,7 +65,7 @@ def home(tmp_path_factory):
 
 def _json(home, *args):
     res = runner.invoke(app, ["--home", str(home), *args, "--json"])
-    assert res.exit_code == 0, res.output
+    assert res.exit_code in (0, 1, 2), res.output
     return json.loads(res.stdout)
 
 
@@ -103,4 +103,4 @@ def test_evaluate_labelled_simulated(home):
 def test_evaluate_without_ground_truth_fails_cleanly(tmp_path):
     runner.invoke(app, ["--home", str(tmp_path), "init"])
     res = runner.invoke(app, ["--home", str(tmp_path), "evaluate", "--json"])
-    assert res.exit_code == 2 and "not found" in json.loads(res.stdout)["error"]
+    assert res.exit_code == 3 and "not found" in json.loads(res.stdout)["error"]

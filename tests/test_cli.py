@@ -14,8 +14,8 @@ runner = CliRunner()
 
 def run(home, *args, ok=True):
     res = runner.invoke(app, ["--home", str(home), *args])
-    if ok:
-        assert res.exit_code == 0, res.output
+    if ok:  # condition commands exit 0/1/2 (ok/warn/alarm); 3 is an error
+        assert res.exit_code in (0, 1, 2), res.output
     return res
 
 
@@ -33,7 +33,7 @@ def home(tmp_path_factory):
 
 def test_commands_require_init(tmp_path):
     res = run(tmp_path / "empty", "fleet", "list", "--json", ok=False)
-    assert res.exit_code == 2
+    assert res.exit_code == 3
     assert "tbfmon init" in json.loads(res.stdout)["error"]
 
 
@@ -63,7 +63,7 @@ def test_ingest_after_simulate_is_noop(home):
 
 def test_ingest_refuses_ground_truth(home):
     res = run(home, "ingest", str(home / "ground_truth" / "ground_truth.csv"), "--kind", "failure", "--json", ok=False)
-    assert res.exit_code == 2
+    assert res.exit_code == 3
     assert "ground truth" in json.loads(res.stdout)["error"]
 
 
@@ -75,7 +75,7 @@ def test_validate_json(home):
     assert names["capacity_classes"]["status"] == "PASS"
     assert names["isolated_spikes"]["count"] > 0  # injected glitches are found
     assert set(out["missing_pct"]) and out["status"] in ("PASS", "WARN")
-    assert run(home, "validate", "--fail-on-warn", ok=False).exit_code == 1
+    assert run(home, "validate", ok=False).exit_code == 1  # WARN: placeholder limits
 
 
 def test_fleet_list_json_and_filters(home):
@@ -99,7 +99,7 @@ def test_fan_show_json(home):
 
 def test_fan_show_unknown(home):
     res = run(home, "fan", "show", "TBF-999", "--json", ok=False)
-    assert res.exit_code == 1
+    assert res.exit_code == 3
 
 
 def test_human_output_renders(home):

@@ -19,6 +19,21 @@ from .render import emit_json, err, fmt, out, sparkline, styled, table
 from .sources import CsvSource, GroundTruthRefused, SimulatorSource
 from .validate import checks_to_dict, run_checks
 
+# Exit codes: 0 ok · 1 warn · 2 alarm · 3 error (bad input, unknown fan, not initialised).
+# Click's usage errors default to 2, which a cron script would read as ALARM. Typer ≥ 0.2x
+# vendors Click as typer._click; patch whichever implementation is present.
+def _usage_errors_exit_3() -> None:
+    import importlib
+
+    for name in ("typer._click.exceptions", "click.exceptions"):
+        try:
+            importlib.import_module(name).UsageError.exit_code = 3
+        except ImportError:
+            pass
+
+
+_usage_errors_exit_3()
+
 app = typer.Typer(
     help="Condition-based monitoring for Tunnel Booster Fans (terminal only).",
     no_args_is_help=True, add_completion=False, rich_markup_mode="rich",
@@ -37,7 +52,7 @@ def _home(ctx: typer.Context) -> Home:
     return ctx.obj
 
 
-def _fail(msg: str, as_json: bool, code: int = 2) -> None:
+def _fail(msg: str, as_json: bool, code: int = 3) -> None:
     if as_json:
         emit_json({"error": msg})
     err.print(f"[bold red]error:[/] {msg}")
@@ -55,6 +70,15 @@ def _placeholder_banner(home: Home) -> None:
     n = load_limits(home.limits_path).placeholder_count()
     if n:
         err.print(f"[yellow]⚠ limits.yaml: {n} placeholder limit(s) — REPLACE WITH OEM VALUES[/]")
+
+
+CONDITION_EXIT = {"OK": 0, "NA": 0, "WARN": 1, "ALARM": 2}
+
+
+def _exit(code: int) -> None:
+    """Exit with the ok/warn/alarm contract (0/1/2) without printing anything."""
+    if code:
+        raise typer.Exit(code)
 
 
 def _version(value: bool) -> None:
@@ -77,9 +101,9 @@ def main(
 
 
 @app.command()
-def init(ctx: typer.Context, force: bool = typer.Option(False, "--force", help="Overwrite limits.yaml and engine.yaml with defaults."),
+def init(ctx: typer.Context, force: bool = typer.Option(False, "--force", help="Overwrite limits.yaml, engine.yaml and config.yaml with defaults."),
          as_json: bool = JsonOpt) -> None:
-    """Create the workspace, SQLite schema and editable limits.yaml / engine.yaml."""
+    """Create the workspace, SQLite schema and editable limits.yaml / engine.yaml / config.yaml."""
     home = _home(ctx)
     home.root.mkdir(parents=True, exist_ok=True)
     conn = db.connect(home.db_path, create=True)
@@ -87,13 +111,18 @@ def init(ctx: typer.Context, force: bool = typer.Option(False, "--force", help="
     wrote_limits = force or not home.limits_path.exists()
     if wrote_limits:
         home.limits_path.write_text(default_limits_text(), encoding="utf-8")
+    from .services.settings import DEFAULT_CONFIG
+    wrote_config = force or not home.config_path.exists()
+    if wrote_config:
+        home.config_path.write_text(DEFAULT_CONFIG, encoding="utf-8")
     wrote_engine = force or not home.engine_config_path.exists()
     if wrote_engine:
         from .engine.config import default_engine_text
         home.engine_config_path.write_text(default_engine_text(), encoding="utf-8")
     result = {"home": str(home.root), "db": str(home.db_path), "limits": str(home.limits_path),
               "limits_written": wrote_limits, "engine_config": str(home.engine_config_path),
-              "engine_config_written": wrote_engine, "schema_version": db.SCHEMA_VERSION, "counts": db.counts(conn)}
+              "engine_config_written": wrote_engine, "config": str(home.config_path),
+              "config_written": wrote_config, "schema_version": db.SCHEMA_VERSION, "counts": db.counts(conn)}
     if as_json:
         emit_json(result)
         return
@@ -101,6 +130,8 @@ def init(ctx: typer.Context, force: bool = typer.Option(False, "--force", help="
     out.print(f"[green]✓[/] database   {home.db_path} (schema v{db.SCHEMA_VERSION})", soft_wrap=True)
     out.print(f"[green]✓[/] limits     {home.limits_path} "
               + ("(written from defaults)" if wrote_limits else "(kept existing; --force to reset)"), soft_wrap=True)
+    out.print(f"[green]✓[/] settings   {home.config_path} "
+              + ("(written from defaults)" if wrote_config else "(kept existing; --force to reset)"), soft_wrap=True)
     out.print(f"[green]✓[/] engine     {home.engine_config_path} "
               + ("(written from defaults)" if wrote_engine else "(kept existing; --force to reset)"), soft_wrap=True)
     _placeholder_banner(home)
@@ -196,11 +227,10 @@ def ingest(
 def validate(
     ctx: typer.Context,
     examples: int = typer.Option(5, "--examples", min=0, help="Examples to show per failing check."),
-    fail_on_warn: bool = typer.Option(False, "--fail-on-warn", help="Exit 1 on WARN as well as FAIL."),
     as_of: Optional[str] = AsOfOpt,
     as_json: bool = JsonOpt,
 ) -> None:
-    """Check limits, referential/temporal consistency, suspect values and missingness."""
+    """Check limits, consistency, suspect values and missingness. Exit 0 PASS · 1 WARN · 2 FAIL."""
     home = _home(ctx)
     conn = _connect(home, as_json)
     ref, _ = resolve_as_of(conn, as_of)
@@ -227,8 +257,7 @@ def validate(
             mt.add_row(p1, f"{v1:.1f}", right[0], "" if right[1] is None else f"{right[1]:.1f}")
         out.print(mt)
         out.print(f"overall: {styled(worst_status)}")
-    if worst_status == "FAIL" or (fail_on_warn and worst_status == "WARN"):
-        raise typer.Exit(1)
+    raise typer.Exit({"PASS": 0, "WARN": 1, "FAIL": 2}[worst_status])
 
 
 # --------------------------------------------------------------------------- fleet list
@@ -262,6 +291,7 @@ def fleet_list(
         rows.sort(key=lambda r: (order[r["condition"]], r["fan_id"]))
     if as_json:
         emit_json({"as_of": ref.isoformat(), "as_of_source": ref_src, "fans": rows})
+        _exit(max((CONDITION_EXIT[r["condition"]] for r in rows), default=0))
         return
     clip = {"no_wrap": True, "overflow": "ellipsis"}
 
@@ -305,6 +335,7 @@ def fleet_list(
               "sharply vs the fan's history (re-measure; excluded from condition); "
               "PM od = OEM PM tasks overdue/total, ⇡ = of which need work at height[/]")
     _placeholder_banner(home)
+    _exit(max((CONDITION_EXIT[r["condition"]] for r in rows), default=0))
 
 
 # --------------------------------------------------------------------------- fan show
@@ -326,9 +357,10 @@ def fan_show(
     ref, _ = resolve_as_of(conn, as_of)
     d = fan_detail(conn, fan_id.upper(), load_limits(home.limits_path), ref, n_runs=runs)
     if d is None:
-        _fail(f"unknown fan {fan_id!r} (see `tbfmon fleet list`)", as_json, code=1)
+        _fail(f"unknown fan {fan_id!r} (see `tbfmon fleet`)", as_json)
     if as_json:
         emit_json(d)
+        _exit(CONDITION_EXIT[d["condition"]])
         return
 
     f = d["fan"]
@@ -389,6 +421,7 @@ def fan_show(
     else:
         out.print("[dim]No failures recorded.[/]")
     _placeholder_banner(home)
+    _exit(CONDITION_EXIT[d["condition"]])
 
 
 from .cli_engine import register as _register_engine  # noqa: E402

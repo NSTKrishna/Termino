@@ -24,7 +24,8 @@ def _a(action: str) -> str:
 
 
 def register(app: typer.Typer) -> None:
-    from .cli import AsOfOpt, JsonOpt, _connect, _fail, _home, _placeholder_banner
+    from .cli import AsOfOpt, JsonOpt, _connect, _exit, _fail, _home, _placeholder_banner
+    from .services.errors import STATUS_EXIT
 
     def _load(ctx: typer.Context, as_of: str | None, as_json: bool, mode: str = "full"):
         from .engine import assess, load_engine_config, load_fleet
@@ -59,16 +60,17 @@ def register(app: typer.Typer) -> None:
             fid = fan.upper()
             i = a.latest_index(fid)
             if i is None:
-                _fail(f"unknown fan or no runs: {fan!r}", as_json, code=1)
+                _fail(f"unknown fan or no runs: {fan!r}", as_json)
             detail = explain_run(a, i)
             detail["trends_all_axes"] = [t.to_dict() for t in fan_trends_all_axes(a, fid)]
             detail["recommendation"] = recs[fid].to_dict()
             detail["model_info"] = a.info
             if as_json:
                 emit_json(detail)
-                return
-            _print_fan(detail, cfg)
-            _placeholder_banner(home)
+            else:
+                _print_fan(detail, cfg)
+                _placeholder_banner(home)
+            _exit(STATUS_EXIT[detail["health"]["status"]])
             return
 
         rows = []
@@ -91,8 +93,10 @@ def register(app: typer.Typer) -> None:
                 "action": recs[fid].action,
             })
         rows.sort(key=lambda x: x["health_index"])
+        code = max((STATUS_EXIT[x["status"]] for x in rows), default=0)
         if as_json:
             emit_json({"as_of": a.data.as_of.isoformat(), "fans": rows, "model_info": a.info})
+            _exit(code)
             return
         t = table(f"Fleet health (as of {a.data.as_of}) — lowest first", "fan", "cls",
                   ("HI", {"justify": "right"}), "status", "likely fault (conf)", ("anom", {"justify": "right"}),
@@ -112,6 +116,7 @@ def register(app: typer.Typer) -> None:
         out.print("[dim]HI = 100 − weighted penalties (limits 30, drift 20, anomaly 15, fault mode 15, trend 15, "
                   "peers 5; engine.yaml). `tbfmon assess --fan ID` explains one fan.[/]")
         _placeholder_banner(home)
+        _exit(code)
 
     # ------------------------------------------------------------------ recommend
     @app.command()
@@ -132,9 +137,11 @@ def register(app: typer.Typer) -> None:
                        "defer_factor": cfg.recommender.defer_factor,
                        "max_interval_factor": cfg.recommender.max_interval_factor,
                        "note": "prevented-failure benefits not counted"}
+        code = 2 if tot["actions"]["urgent corrective"] else 1 if tot["actions"]["targeted inspection"] else 0
         if as_json:
             emit_json({"as_of": a.data.as_of.isoformat(), "recommendations": [r.to_dict() for r in recs],
                        "totals": tot, "assumptions": assumptions})
+            _exit(code)
             return
         order = {"urgent corrective": 0, "targeted inspection": 1, "defer OEM PM": 2, "no action": 3}
         shown = [r for r in sorted(recs, key=lambda r: (order[r.action], r.health_index or 0))
@@ -163,6 +170,7 @@ def register(app: typer.Typer) -> None:
                   f"baseline or with data older than {cfg.recommender.stale_after_days} d; IR tests and control "
                   f"checks never deferred; prevented-failure benefit not counted.[/]")
         _placeholder_banner(home)
+        _exit(code)
 
     # ------------------------------------------------------------------ evaluate
     @app.command()

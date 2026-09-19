@@ -28,6 +28,18 @@ class Home:
         return self.root / "limits.yaml"
 
     @property
+    def config_path(self) -> Path:
+        return self.root / "config.yaml"
+
+    @property
+    def reports_dir(self) -> Path:
+        return self.root / "reports"
+
+    @property
+    def drills_dir(self) -> Path:
+        return self.root / "drills"
+
+    @property
     def engine_config_path(self) -> Path:
         return self.root / "engine.yaml"
 
