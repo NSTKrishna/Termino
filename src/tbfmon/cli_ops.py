@@ -12,7 +12,8 @@ import typer
 from rich import box
 from rich.panel import Panel
 
-from .render import (conf_bar, emit_json, err, fmt, health_label, hi_bar, out, param_label, sparkline, table)
+from .render import (conf_bar, emit_json, err, fmt, health_label, hi_bar, out, param_label, severity_label,
+                     sparkline, table)
 from .services.errors import TbfmonError
 from .services.workspace import Workspace
 
@@ -171,6 +172,34 @@ def render_explain(d: dict, ws: Workspace) -> None:
         out.print("[dim]No recorded failure has a similar deviation signature.[/]")
 
 
+OUTCOME_STYLE = {"new": "bold", "escalated": "bold", "deduplicated": "dim", "suppressed": "dim"}
+
+
+def render_outcomes(outs: list[dict], show_quiet: bool = False) -> None:
+    """Terminal channel: one line per raised/escalated alert (deduplicated/suppressed summarised)."""
+    loud = [o for o in outs if o["outcome"] in ("new", "escalated")]
+    quiet = len(outs) - len(loud)
+    for o in sorted(loud, key=lambda o: ("INFO", "WARN", "ALARM", "CRITICAL").index(o["severity"]), reverse=True):
+        out.print(f"  🔔 {severity_label(o['severity']):>8} #{o['alert_id']} [{OUTCOME_STYLE[o['outcome']]}]"
+                  f"{o['outcome']}[/] {o['title']} — {o['message']}")
+    if show_quiet:
+        for o in outs:
+            if o["outcome"] not in ("new", "escalated"):
+                out.print(f"  [dim]{o['outcome']}: #{o['alert_id']} {o['title']}[/]")
+    elif quiet:
+        out.print(f"  [dim]{quiet} repeat alert(s) deduplicated or in cooldown[/]")
+
+
+def render_alert_list(rows: list[dict], ws: Workspace) -> None:
+    t = table(f"Alerts ({len(rows)})", ("id", {"justify": "right"}), "severity", "fan", "title", "first seen",
+              ("×", {"justify": "right"}), "status", box=box.SIMPLE_HEAD, pad_edge=False)
+    for r in rows:
+        st = "open" if r["status"] == "open" else f"acked by {r['acked_by']} {ws.settings.fmt(r['acked_at'])}"
+        t.add_row(str(r["id"]), severity_label(r["severity"]), r["fan_id"] or "—", r["title"],
+                  ws.settings.fmt(r["created_at"]), str(r["occurrences"]), st)
+    out.print(t)
+
+
 # ---------------------------------------------------------------------- commands
 
 
@@ -224,6 +253,54 @@ def register(app: typer.Typer, fleet_app: typer.Typer) -> None:
             render_fleet(data, ws, f"Fleet health — {len(rows)} fans (as of {as_of_d}) · worst first")
             _placeholder_banner(ws.home)
         finish(code)
+
+    alerts_app = typer.Typer(help="Persisted alerts: list and acknowledge.", no_args_is_help=True)
+    app.add_typer(alerts_app, name="alerts")
+
+    @alerts_app.command("list")
+    def alerts_list(
+        ctx: typer.Context,
+        status: str = typer.Option("open", "--status", help="open | acked | all."),
+        fan: Optional[str] = typer.Option(None, "--fan", help="Only this fan."),
+        severity: Optional[str] = typer.Option(None, "--severity", help="Minimum severity: INFO|WARN|ALARM|CRITICAL."),
+        as_json: bool = JsonOpt,
+    ) -> None:
+        """List alerts, most severe first. Exit code = worst listed severity (0/1/2)."""
+        from .services.alerts import AlertStore, alerts_exit
+
+        with guarded(as_json):
+            ws = open_ws(ctx)
+            rows = AlertStore(ws).list(status, fan, severity)
+        if as_json:
+            emit_json({"alerts": rows})
+        elif rows:
+            render_alert_list(rows, ws)
+        else:
+            out.print(f"[green]No {status if status != 'all' else ''} alerts.[/]")
+        finish(alerts_exit(rows) if status != "acked" else 0)
+
+    @alerts_app.command("ack")
+    def alerts_ack(
+        ctx: typer.Context,
+        ids: Optional[list[int]] = typer.Argument(None, help="Alert IDs to acknowledge."),
+        all_open: bool = typer.Option(False, "--all", help="Acknowledge every open alert (optionally --fan)."),
+        fan: Optional[str] = typer.Option(None, "--fan", help="With --all: only this fan."),
+        user: Optional[str] = typer.Option(None, "--user", help="Who acknowledges (default: config/TBFMON_USER/OS user)."),
+        note: Optional[str] = typer.Option(None, "--note", help="Free-text note stored with the ack."),
+        as_json: bool = JsonOpt,
+    ) -> None:
+        """Acknowledge alerts (recorded with user and IST timestamp; starts the cooldown)."""
+        from .services.alerts import AlertStore
+
+        with guarded(as_json):
+            ws = open_ws(ctx)
+            rows = AlertStore(ws).ack(list(ids or []), user, note, all_open, fan)
+        if as_json:
+            emit_json({"acknowledged": rows})
+            return
+        for r in rows:
+            out.print(f"  #{r['id']} {severity_label(r['severity'])} {r['title']}: {r['result']}"
+                      + (f" by {r['acked_by']} at {ws.settings.fmt(r['acked_at'])}" if r["acked_at"] else ""))
 
     @app.command()
     def explain(
