@@ -28,6 +28,7 @@ ALLOWED = {
     "paths.py",                     # workspace layout
     "sources/csv_source.py",        # refuses it
     "services/watch.py",            # skips it if dropped into a watched folder
+    "services/setup.py",            # tells the simulator where to write it
     "sources/simulator_source.py",  # documents that it never yields it
     "cli.py",                       # prints where it was written
     "cli_engine.py",                # passes the directory to the evaluator

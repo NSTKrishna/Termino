@@ -14,3 +14,4 @@ tbfmon_data/
 *.sqlite3
 
 .DS_Store
+tbfmon_demo/

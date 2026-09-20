@@ -104,25 +104,12 @@ def main(
 def init(ctx: typer.Context, force: bool = typer.Option(False, "--force", help="Overwrite limits.yaml, engine.yaml and config.yaml with defaults."),
          as_json: bool = JsonOpt) -> None:
     """Create the workspace, SQLite schema and editable limits.yaml / engine.yaml / config.yaml."""
+    from .services.setup import init_workspace
+
     home = _home(ctx)
-    home.root.mkdir(parents=True, exist_ok=True)
-    conn = db.connect(home.db_path, create=True)
-    db.init_schema(conn)
-    wrote_limits = force or not home.limits_path.exists()
-    if wrote_limits:
-        home.limits_path.write_text(default_limits_text(), encoding="utf-8")
-    from .services.settings import DEFAULT_CONFIG
-    wrote_config = force or not home.config_path.exists()
-    if wrote_config:
-        home.config_path.write_text(DEFAULT_CONFIG, encoding="utf-8")
-    wrote_engine = force or not home.engine_config_path.exists()
-    if wrote_engine:
-        from .engine.config import default_engine_text
-        home.engine_config_path.write_text(default_engine_text(), encoding="utf-8")
-    result = {"home": str(home.root), "db": str(home.db_path), "limits": str(home.limits_path),
-              "limits_written": wrote_limits, "engine_config": str(home.engine_config_path),
-              "engine_config_written": wrote_engine, "config": str(home.config_path),
-              "config_written": wrote_config, "schema_version": db.SCHEMA_VERSION, "counts": db.counts(conn)}
+    result = init_workspace(home, force)
+    wrote_limits, wrote_config, wrote_engine = (result["limits_written"], result["config_written"],
+                                                result["engine_config_written"])
     if as_json:
         emit_json(result)
         return
@@ -151,17 +138,16 @@ def simulate(
     as_json: bool = JsonOpt,
 ) -> None:
     """Generate a synthetic fleet: CSV bundle + separate ground truth, then ingest."""
-    from .simulate import generate  # heavy import only when needed
+    from .services.setup import simulate_into
 
     home = _home(ctx)
-    conn = None if no_ingest else _connect(home, as_json)
+    if not no_ingest:
+        _connect(home, as_json)  # friendly "run tbfmon init" before generating anything
     try:
         start_d = dt.date.fromisoformat(start)
     except ValueError:
         _fail(f"--start must be YYYY-MM-DD, got {start!r}", as_json)
-    ds = generate(n_fans=fans, years=years, seed=seed, start=start_d)
-    files = ds.write(home.sim_dir, home.ground_truth_dir)
-    report = None if conn is None else run_ingest(conn, SimulatorSource(ds))
+    ds, files, report = simulate_into(home, fans, years, seed, start_d, ingest_data=not no_ingest)
     result = {"summary": ds.summary(), "files": {k: str(v) for k, v in files.items()},
               "ingest": report.to_dict() if report else None}
     if as_json:
@@ -431,6 +417,10 @@ _register_engine(app)
 from .cli_ops import register as _register_ops  # noqa: E402
 
 _register_ops(app, fleet_app)
+
+from .cli_demo import register as _register_demo  # noqa: E402
+
+_register_demo(app)
 
 if __name__ == "__main__":  # pragma: no cover
     app()

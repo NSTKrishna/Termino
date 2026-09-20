@@ -14,6 +14,7 @@ from .errors import TbfmonError
 from .workspace import Workspace
 
 UNITS = {"d": 1, "w": 7, "m": 30, "y": 365}
+COMBINE_DAYS = 30  # OEM tasks related to the fault, due within this long after the visit, are done during it
 
 
 def parse_horizon(text: str) -> int:
@@ -75,6 +76,7 @@ def build_plan(ws: Workspace, horizon_days: int, as_of: str | None = None, stati
     tot = {"oem_tasks": 0, "cbm_tasks": 0, "man_hours_oem": 0.0, "man_hours_cbm": 0.0,
            "height_hours_oem": 0.0, "height_hours_cbm": 0.0, "actions": {}}
     notes = []
+    combined: list[dict[str, Any]] = []
     maint = a.data.maintenance
     done = maint[maint["type"] == "preventive"]
     for fan_id, f in a.data.fans.iterrows():
@@ -105,14 +107,25 @@ def build_plan(ws: Workspace, horizon_days: int, as_of: str | None = None, stati
         deferred_tasks = {d["task"] for d in rec.deferred}
         for d in rec.deferred:
             deferred.append({"fan_id": fan_id, "station": f["station"], **d})
+        # OEM tasks that address the fault being corrected/inspected are done in the same visit.
+        visit = rec.action in ("urgent corrective", "targeted inspection") and rec.by_date and rec.top_mode
+        combine_until = (dt.date.fromisoformat(rec.by_date) + dt.timedelta(days=COMBINE_DAYS)) if visit else None
         for t in a.data.pm_tasks[a.data.pm_tasks["fan_id"] == fan_id].itertuples():
             if pd.isna(t.interval_months) or t.task in deferred_tasks:
                 continue
             prev = done[(done["fan_id"] == fan_id) & (done["task"] == t.task)]["date"]
             last = prev.max().date() if len(prev) else None
+            kw = next((k for k in cfg.task_modes if k in t.task.lower()), None)
+            related = visit and kw is not None and rec.top_mode in cfg.task_modes[kw]
+            hours = mh["at_height"] if t.needs_work_at_height else mh["ground"]
             for due in oem_occurrences(last, float(t.interval_months), start, end):
-                items.append(PlanItem(fan_id, "OEM PM", t.task, due.isoformat(), bool(t.needs_work_at_height),
-                                      mh["at_height"] if t.needs_work_at_height else mh["ground"],
+                if related and due <= combine_until:
+                    tot["cbm_tasks"] -= 1
+                    tot["man_hours_cbm"] -= hours
+                    tot["height_hours_cbm"] -= hours * bool(t.needs_work_at_height)
+                    combined.append({"fan_id": fan_id, "task": t.task, "due": due.isoformat(), "with": rec.action})
+                    continue
+                items.append(PlanItem(fan_id, "OEM PM", t.task, due.isoformat(), bool(t.needs_work_at_height), hours,
                                       "overdue" if last is None or due == start else "time-based schedule"))
     stations = []
     for name in sorted(per_station):
@@ -125,6 +138,9 @@ def build_plan(ws: Workspace, horizon_days: int, as_of: str | None = None, stati
     tot["man_hours_saved"] = round(tot["man_hours_oem"] - tot["man_hours_cbm"], 1)
     tot["height_hours_saved"] = round(tot["height_hours_oem"] - tot["height_hours_cbm"], 1)
     tot["tasks_deferred"] = len(deferred)
+    if combined:
+        notes.append(f"{len(combined)} OEM task(s) combined with condition-driven visits: "
+                     + ", ".join(f"{c['fan_id']} {c['task']}" for c in combined[:6]))
     code = 2 if tot["actions"].get("urgent corrective") else 1 if tot["actions"].get("targeted inspection") else 0
     assumptions = {"man_hours": dict(mh), "max_interval_factor": cfg.max_interval_factor,
                    "never_deferred": "insulation resistance tests, control/starter checks",

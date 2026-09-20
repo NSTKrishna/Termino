@@ -97,6 +97,10 @@ def explain_fan(ws: Workspace, fan: str, as_of: str | None = None) -> dict[str, 
         if e["anomaly"]["flagged"]:
             add(c["feature"], "anomaly model")
     features = sorted(contrib.values(), key=lambda c: -max(abs(c["z"] or 0), abs(c["peer_z"] or 0) * 0.7))
+    for c in features:  # show insulation resistance in MΩ, not log units
+        if c["feature"] == "ir40_log":
+            c.update(label="IR @40 °C", unit="MΩ", value=None if c["value"] is None else round(10 ** c["value"], 2),
+                     baseline=None if c["baseline"] is None else round(10 ** c["baseline"], 1))
     similar, _ = similar_failures(ws, fan_id, as_of)
     rec = recommendation_for(a, i, ws)
     return {

@@ -159,7 +159,7 @@ def render_explain(d: dict, ws: Workspace) -> None:
         for r in m["reasons"]:
             out.print(f"      · {r}")
     for tr in d["trends"]:
-        if tr["eta"] is not None:
+        if tr["eta"] is not None and tr["eta"] <= 3 * 365:  # longer projections are not actionable
             lo, hi = tr["eta_ci"]
             hi_s = "∞" if hi is None or hi > 1e6 else f"{hi:.0f}"
             out.print(f"  trend: {tr['indicator']} {tr['status']} — ALARM in ~{tr['eta']:.0f} days (CI {lo:.0f}–{hi_s})")
