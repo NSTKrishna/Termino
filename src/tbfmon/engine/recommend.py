@@ -79,6 +79,11 @@ def _occurrences(last: dt.date | None, months: float, start: dt.date, end: dt.da
     return out
 
 
+def oem_occurrences(last: dt.date | None, months: float, start: dt.date, end: dt.date) -> list[dt.date]:
+    """Public: OEM due dates of a task in [start, end] (overdue or never done ⇒ due at start)."""
+    return _occurrences(last, months, start, end)
+
+
 def _matches(task: str, keywords: list[str]) -> str | None:
     t = task.lower()
     return next((k for k in keywords if k in t), None)

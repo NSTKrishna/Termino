@@ -249,6 +249,42 @@ def render_drill(res: dict, ws: Workspace) -> None:
         out.print("[green]No deviations — no alerts raised.[/]")
 
 
+def render_plan(pl: dict, ws: Workspace) -> None:
+    t = pl["totals"]
+    out.print(Panel(f"[bold]Condition-based maintenance plan[/] · {pl['as_of']} → {pl['end']} ({pl['horizon_days']} days)\n"
+                    + "  ".join(f"{action_label(k)} {v}" for k, v in t["actions"].items()),
+                    box=box.ROUNDED, expand=False))
+    for st in pl["stations"]:
+        t_st = table(f"{st['station']} — {len(st['items'])} task(s), {st['height_tasks']} at height, "
+                     f"{st['man_hours']:g} man-h", "due", "fan", "type", "task", "height", ("man-h", {"justify": "right"}),
+                     box=box.SIMPLE_HEAD, pad_edge=False)
+        for i in st["items"]:
+            kind = action_label(i["kind"]) if i["kind"] != "OEM PM" else "OEM PM"
+            t_st.add_row(i["due"], i["fan_id"], kind, i["task"],
+                         "[bold yellow]⇡ HEIGHT[/]" if i["needs_work_at_height"] else "ground", f"{i['man_hours']:g}")
+        out.print(t_st)
+    if pl["deferred"]:
+        d = table(f"Deferred OEM PMs ({len(pl['deferred'])}) — condition healthy, related faults not indicated",
+                  "fan", "station", "task", "OEM due", "deferred to", "height", box=box.SIMPLE_HEAD, pad_edge=False)
+        for x in pl["deferred"]:
+            d.add_row(x["fan_id"], x["station"], x["task"], x["oem_due"] or "—", x["deferred_to"],
+                      "⇡" if x["needs_work_at_height"] else "")
+        out.print(d)
+    s = table(f"Man-hours, next {pl['horizon_days']} days: time-based vs condition-based", "",
+              ("OEM schedule", {"justify": "right"}), ("CBM plan", {"justify": "right"}), ("saved", {"justify": "right"}))
+    s.add_row("PM task occurrences", str(t["oem_tasks"]), str(t["cbm_tasks"]), str(t["oem_tasks"] - t["cbm_tasks"]))
+    s.add_row("man-hours", f"{t['man_hours_oem']:g}", f"{t['man_hours_cbm']:g}", f"[bold green]{t['man_hours_saved']:g}[/]")
+    s.add_row("work-at-height hours", f"{t['height_hours_oem']:g}", f"{t['height_hours_cbm']:g}",
+              f"[bold green]{t['height_hours_saved']:g}[/]")
+    out.print(s)
+    mh = pl["assumptions"]["man_hours"]
+    out.print(f"[dim]assumptions (engine.yaml): {mh['at_height']:g} h per at-height task, {mh['ground']:g} h ground, "
+              f"{mh['targeted_inspection']:g} h inspection, {mh['urgent_corrective']:g} h corrective; never deferred: "
+              f"{pl['assumptions']['never_deferred']}; failures prevented not counted.[/]")
+    for n in pl["notes"]:
+        out.print(f"[dim]note: {n}[/]")
+
+
 # ---------------------------------------------------------------------- commands
 
 
@@ -494,6 +530,57 @@ def register(app: typer.Typer, fleet_app: typer.Typer) -> None:
         else:
             out.print(f"processed {len(state['events'])} file(s), raised {len(state['alerts'])} alert(s)")
         finish(state["worst"])
+
+    @app.command()
+    def plan(
+        ctx: typer.Context,
+        horizon: str = typer.Option("90d", "--horizon", help="Planning horizon: 90d, 12w, 6m, 1y."),
+        station: Optional[str] = typer.Option(None, "--station", help="Only this station."),
+        as_of: Optional[str] = AsOfOpt,
+        as_json: bool = JsonOpt,
+    ) -> None:
+        """Condition-based maintenance plan by station vs the OEM schedule. Exit 2 urgent · 1 inspections · 0."""
+        from .services.plan import build_plan, parse_horizon
+
+        with guarded(as_json):
+            ws = open_ws(ctx)
+            pl = build_plan(ws, parse_horizon(horizon), as_of, station).to_dict()
+        if as_json:
+            emit_json(pl)
+        else:
+            render_plan(pl, ws)
+            _placeholder_banner(ws.home)
+        finish(pl["exit_code"])
+
+    @app.command()
+    def report(
+        ctx: typer.Context,
+        fan: Optional[str] = typer.Option(None, "--fan", help="Report for one fan."),
+        fleet_: bool = typer.Option(False, "--fleet", help="Report for the whole fleet."),
+        fmt_: str = typer.Option("md", "--format", help="md | html | csv | json."),
+        out_path: Optional[Path] = typer.Option(None, "--out", help="File or folder (default: <home>/reports/); '-' = stdout."),
+        horizon: str = typer.Option("90d", "--horizon", help="Plan horizon in fleet reports."),
+        as_json: bool = JsonOpt,
+    ) -> None:
+        """Write a report file (Markdown, static HTML, CSV or JSON). HTML is a file, never a server."""
+        from .services.plan import parse_horizon
+        from .services.reports import FORMATS, fan_report, fleet_report, write_report
+
+        with guarded(as_json):
+            if bool(fan) == bool(fleet_):
+                raise TbfmonError("give exactly one of --fan ID or --fleet")
+            if fmt_.lower() not in FORMATS:
+                raise TbfmonError(f"unknown format {fmt_!r}", f"use one of {', '.join(FORMATS)}")
+            ws = open_ws(ctx)
+            doc = fan_report(ws, fan) if fan else fleet_report(ws, parse_horizon(horizon))
+            stem = f"fan_{doc.data['analysis']['fan_id']}" if fan else "fleet"
+            path = write_report(ws, doc, fmt_.lower(), out_path, stem)
+        if path is None:
+            return
+        if as_json:
+            emit_json({"report": str(path), "format": fmt_.lower(), "title": doc.title})
+        else:
+            out.print(f"[green]✓[/] {doc.title} → {path}", soft_wrap=True)
 
     @app.command()
     def explain(
