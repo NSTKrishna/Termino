@@ -606,7 +606,7 @@ watch interval) with env overrides `TBFMON_TZ`, `TBFMON_USER`,
 refuses to delete a foreign folder): simulate → idempotent re-ingest → fleet
 → mock drill at the station with the most healthy fans, injecting bearing
 wear and insulation degradation into two of them → alerts → explain →
-90-day station plan → fleet savings. `--fast` skips the ~13 s pauses.
+90-day station plan → fleet savings. `--fast` skips the ~18 s pauses (paced run ≈ 2.3 minutes).
 
 ## 12. Roadmap
 

@@ -23,7 +23,7 @@ from .services.errors import TbfmonError
 
 MARKER = ".tbfmon-demo"
 STEPS = 8
-PAUSE_S = 13.0
+PAUSE_S = 18.0  # 7 pauses + ~10 s of work ≈ 2–3 minutes
 
 
 def _prepare_dir(path: Path) -> Home:
