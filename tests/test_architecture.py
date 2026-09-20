@@ -1,4 +1,4 @@
-"""Layering (DESIGN.md §12): engine ← services ← CLI. A web dashboard could replace the CLI
+"""Layering (DESIGN.md §11): engine ← services ← CLI. A web dashboard could replace the CLI
 without touching the engine or the services, so neither may import Typer, Rich or the CLI."""
 
 from __future__ import annotations

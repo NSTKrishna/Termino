@@ -1,4 +1,4 @@
-"""Headless application layer (DESIGN.md §12).
+"""Headless application layer (DESIGN.md §11).
 
 Everything the terminal UI does goes through these functions, which return plain
 dataclasses / dicts and never import Typer or Rich. A future web dashboard can

@@ -1,6 +1,6 @@
 """Operator commands: analyze, fleet (health view), explain — and shared renderers.
 
-Rendering only: all logic lives in tbfmon.services (DESIGN.md §12).
+Rendering only: all logic lives in tbfmon.services (DESIGN.md §11).
 """
 
 from __future__ import annotations
