@@ -72,7 +72,7 @@ class Dataset:
     test_runs: pd.DataFrame
     maintenance: pd.DataFrame
     failures: pd.DataFrame
-    ground_truth: pd.DataFrame  # evaluator only
+    ground_truth: pd.DataFrame  # kept separate; never ingested
     params: dict = field(default_factory=dict)
 
     def write(self, sim_dir: Path, ground_truth_dir: Path) -> dict[str, Path]:

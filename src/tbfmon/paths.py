@@ -28,26 +28,10 @@ class Home:
         return self.root / "limits.yaml"
 
     @property
-    def config_path(self) -> Path:
-        return self.root / "config.yaml"
-
-    @property
-    def reports_dir(self) -> Path:
-        return self.root / "reports"
-
-    @property
-    def drills_dir(self) -> Path:
-        return self.root / "drills"
-
-    @property
-    def engine_config_path(self) -> Path:
-        return self.root / "engine.yaml"
-
-    @property
     def sim_dir(self) -> Path:
         return self.root / "sim"
 
     @property
     def ground_truth_dir(self) -> Path:
-        # Evaluator-only. Never pass this to ingestion or analytics.
+        # Kept apart from the CSV bundle. Never pass this to ingestion.
         return self.root / "ground_truth"

@@ -1,4 +1,4 @@
-"""Workspace creation and simulated-fleet loading (shared by `init`, `simulate` and `demo`)."""
+"""Workspace creation and simulated-fleet loading (shared by `init` and `simulate`)."""
 
 from __future__ import annotations
 
@@ -6,28 +6,20 @@ import datetime as dt
 from typing import Any
 
 from .. import db
-from ..engine.config import default_engine_text
 from ..ingest import IngestReport, ingest
 from ..limits import default_limits_text
 from ..paths import Home
-from .settings import DEFAULT_CONFIG
 
 
 def init_workspace(home: Home, force: bool = False) -> dict[str, Any]:
     home.root.mkdir(parents=True, exist_ok=True)
     conn = db.connect(home.db_path, create=True)
     db.init_schema(conn)
-    written = {}
-    for key, path, text in (("limits", home.limits_path, default_limits_text()),
-                            ("config", home.config_path, DEFAULT_CONFIG),
-                            ("engine_config", home.engine_config_path, default_engine_text())):
-        written[key] = force or not path.exists()
-        if written[key]:
-            path.write_text(text, encoding="utf-8")
+    limits_written = force or not home.limits_path.exists()
+    if limits_written:
+        home.limits_path.write_text(default_limits_text(), encoding="utf-8")
     res = {"home": str(home.root), "db": str(home.db_path), "limits": str(home.limits_path),
-           "limits_written": written["limits"], "engine_config": str(home.engine_config_path),
-           "engine_config_written": written["engine_config"], "config": str(home.config_path),
-           "config_written": written["config"], "schema_version": db.SCHEMA_VERSION, "counts": db.counts(conn)}
+           "limits_written": limits_written, "schema_version": db.SCHEMA_VERSION, "counts": db.counts(conn)}
     conn.close()
     return res
 

@@ -23,7 +23,7 @@ KIND_FILES: dict[Kind, str] = {v: k for k, v in FILE_KINDS.items()}
 class CsvSource:
     def __init__(self, path: str | Path, kind: Kind | None = None):
         self.path = Path(path).expanduser().resolve()
-        # Ground truth is evaluator-only (DESIGN.md §0.3): refuse it outright.
+        # Ground truth is kept separate (DESIGN.md §0.3): refuse it outright.
         if any("ground_truth" in part.lower() for part in self.path.parts):
             raise GroundTruthRefused(f"refusing to ingest ground truth: {self.path}")
         if not self.path.exists():

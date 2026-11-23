@@ -35,11 +35,11 @@ def _usage_errors_exit_3() -> None:
 _usage_errors_exit_3()
 
 app = typer.Typer(
-    help="Condition-based monitoring for Tunnel Booster Fans (terminal only).",
+    help="Termino Lite: data and limit monitoring for Tunnel Booster Fans (terminal only).",
     no_args_is_help=True, add_completion=False, rich_markup_mode="rich",
     pretty_exceptions_show_locals=False,
 )
-fleet_app = typer.Typer(help="Fleet-wide views.", no_args_is_help=False)
+fleet_app = typer.Typer(help="Fleet-wide views.", no_args_is_help=True)
 fan_app = typer.Typer(help="Single-fan views.", no_args_is_help=True)
 app.add_typer(fleet_app, name="fleet")
 app.add_typer(fan_app, name="fan")
@@ -101,26 +101,21 @@ def main(
 
 
 @app.command()
-def init(ctx: typer.Context, force: bool = typer.Option(False, "--force", help="Overwrite limits.yaml, engine.yaml and config.yaml with defaults."),
+def init(ctx: typer.Context, force: bool = typer.Option(False, "--force", help="Overwrite limits.yaml with the defaults."),
          as_json: bool = JsonOpt) -> None:
-    """Create the workspace, SQLite schema and editable limits.yaml / engine.yaml / config.yaml."""
+    """Create the workspace, SQLite schema and an editable limits.yaml."""
     from .services.setup import init_workspace
 
     home = _home(ctx)
     result = init_workspace(home, force)
-    wrote_limits, wrote_config, wrote_engine = (result["limits_written"], result["config_written"],
-                                                result["engine_config_written"])
     if as_json:
         emit_json(result)
         return
     out.print(f"[green]✓[/] workspace  {home.root}", soft_wrap=True)
     out.print(f"[green]✓[/] database   {home.db_path} (schema v{db.SCHEMA_VERSION})", soft_wrap=True)
     out.print(f"[green]✓[/] limits     {home.limits_path} "
-              + ("(written from defaults)" if wrote_limits else "(kept existing; --force to reset)"), soft_wrap=True)
-    out.print(f"[green]✓[/] settings   {home.config_path} "
-              + ("(written from defaults)" if wrote_config else "(kept existing; --force to reset)"), soft_wrap=True)
-    out.print(f"[green]✓[/] engine     {home.engine_config_path} "
-              + ("(written from defaults)" if wrote_engine else "(kept existing; --force to reset)"), soft_wrap=True)
+              + ("(written from defaults)" if result["limits_written"] else "(kept existing; --force to reset)"),
+              soft_wrap=True)
     _placeholder_banner(home)
 
 
@@ -160,7 +155,7 @@ def simulate(
     t.add_row("episode outcomes", ", ".join(f"{k}={v}" for k, v in s["episode_outcomes"].items()))
     out.print(t)
     out.print(f"CSV bundle   → {home.sim_dir}", soft_wrap=True)
-    out.print(f"ground truth → {files['ground_truth']}  [dim](evaluator only; never ingested)[/]", soft_wrap=True)
+    out.print(f"ground truth → {files['ground_truth']}  [dim](kept separate; never ingested)[/]", soft_wrap=True)
     if report:
         _print_ingest(report)
 
@@ -196,7 +191,7 @@ def ingest(
     try:
         source = CsvSource(path, kind=kind)  # type: ignore[arg-type]
     except GroundTruthRefused as e:
-        _fail(f"{e} — ground truth is evaluator-only (DESIGN.md §0)", as_json)
+        _fail(f"{e} — ground truth is kept separate and is never ingested (DESIGN.md §0)", as_json)
     except (FileNotFoundError, ValueError) as e:
         _fail(str(e), as_json)
     report = run_ingest(conn, source)
@@ -343,7 +338,7 @@ def fan_show(
     ref, _ = resolve_as_of(conn, as_of)
     d = fan_detail(conn, fan_id.upper(), load_limits(home.limits_path), ref, n_runs=runs)
     if d is None:
-        _fail(f"unknown fan {fan_id!r} (see `tbfmon fleet`)", as_json)
+        _fail(f"unknown fan {fan_id!r} (see `tbfmon fleet list`)", as_json)
     if as_json:
         emit_json(d)
         _exit(CONDITION_EXIT[d["condition"]])
@@ -409,18 +404,6 @@ def fan_show(
     _placeholder_banner(home)
     _exit(CONDITION_EXIT[d["condition"]])
 
-
-from .cli_engine import register as _register_engine  # noqa: E402
-
-_register_engine(app)
-
-from .cli_ops import register as _register_ops  # noqa: E402
-
-_register_ops(app, fleet_app)
-
-from .cli_demo import register as _register_demo  # noqa: E402
-
-_register_demo(app)
 
 if __name__ == "__main__":  # pragma: no cover
     app()

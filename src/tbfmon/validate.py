@@ -285,8 +285,3 @@ def checks_to_dict(checks: list[Check]) -> list[dict[str, Any]]:
 def measurement_label(p: str) -> str:
     m = MEASUREMENTS[p]
     return f"{m.label} [{m.unit}]"
-
-
-# Public names for reuse by the analytics engine (same rules, one source of truth).
-scale_floors = _floors
-detection_domain = _series_for

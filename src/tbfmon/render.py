@@ -79,36 +79,3 @@ def table(title: str | None = None, *columns: str | tuple[str, dict], **kw) -> T
         name, opts = (c, {}) if isinstance(c, str) else c
         t.add_column(name, **opts)
     return t
-
-
-HEALTH_STYLE = {"Healthy": "green", "Watch": "yellow", "Degraded": "dark_orange", "Critical": "bold red",
-                "No data": "dim"}
-SEVERITY_STYLE = {"INFO": "cyan", "WARN": "yellow", "ALARM": "bold red", "CRITICAL": "bold white on red"}
-PARAM_STYLE = {"OK": "green", "WARN": "yellow", "ALARM": "bold red", "SUSPECT": "magenta", "NA": "dim",
-               "not measured": "dim", "no limit": "dim"}
-
-
-def health_label(status: str) -> str:
-    return f"[{HEALTH_STYLE.get(status, '')}]{status}[/]"
-
-
-def severity_label(sev: str) -> str:
-    return f"[{SEVERITY_STYLE.get(sev, '')}]{sev}[/]"
-
-
-def param_label(status: str) -> str:
-    return f"[{PARAM_STYLE.get(status, '')}]{status}[/]"
-
-
-def hi_bar(hi: float | None, status: str, width: int = 20, compact: bool = False) -> str:
-    """Health index bar, e.g. '██████████████░░░░░░ 72/100' (compact: '███░░ 72')."""
-    if hi is None:
-        return "[dim]no data[/]"
-    filled = int(round(max(0.0, min(100.0, hi)) / 100 * width))
-    style = HEALTH_STYLE.get(status, "")
-    return f"[{style}]{'█' * filled}[/][dim]{'░' * (width - filled)}[/] {hi:.0f}" + ("" if compact else "/100")
-
-
-def conf_bar(conf: float, width: int = 10) -> str:
-    filled = int(round(max(0.0, min(1.0, conf)) * width))
-    return f"{'▰' * filled}{'▱' * (width - filled)} {conf * 100:.0f}%"

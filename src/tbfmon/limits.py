@@ -144,11 +144,6 @@ def evaluate(
     return Status.OK, x
 
 
-def evaluate_run(run: dict[str, Any], limits: dict[str, Limit], fan: dict[str, Any]) -> dict[str, tuple[Status, float | None]]:
-    ambient = run.get("ambient_temp_c")
-    return {p: evaluate(p, run.get(p), lim, fan, ambient) for p, lim in limits.items()}
-
-
 def describe(limit: Limit) -> str:
     """Short human text like '≥4.5 / ≥7.1' or '≤100 / ≤10 MΩ'."""
     parts = []

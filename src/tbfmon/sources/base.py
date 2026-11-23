@@ -33,4 +33,4 @@ class Source(Protocol):
 
 
 class GroundTruthRefused(ValueError):
-    """Raised when asked to read simulator ground truth (evaluator-only data)."""
+    """Raised when asked to read simulator ground truth (never ingested)."""

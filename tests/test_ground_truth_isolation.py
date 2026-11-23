@@ -1,15 +1,13 @@
-"""DESIGN.md §0.3: only `tbfmon.evaluation` may read ground truth; the engine never touches it.
+"""DESIGN.md §0.3: the simulator's ground truth is written to a separate folder and never read.
 
-Static checks: which modules may mention it, and that the engine never imports the
-evaluator. Dynamic check: run the whole engine with every file-open that names
-ground truth rigged to fail.
+Static check: which modules may mention it. Dynamic check: run ingestion, validation and
+the fleet/fan views with every file-open that names ground truth rigged to fail.
 """
 
 from __future__ import annotations
 
 import builtins
 import io
-import re
 from pathlib import Path
 
 import pandas as pd
@@ -19,7 +17,7 @@ import tbfmon
 from tbfmon import db
 from tbfmon.ingest import ingest
 from tbfmon.simulate import generate
-from tbfmon.sources import SimulatorSource
+from tbfmon.sources import CsvSource, GroundTruthRefused
 
 SRC = Path(tbfmon.__file__).parent
 ALLOWED = {
@@ -27,12 +25,9 @@ ALLOWED = {
     "simulate/__init__.py",         # re-exports the file name
     "paths.py",                     # workspace layout
     "sources/csv_source.py",        # refuses it
-    "services/watch.py",            # skips it if dropped into a watched folder
     "services/setup.py",            # tells the simulator where to write it
     "sources/simulator_source.py",  # documents that it never yields it
     "cli.py",                       # prints where it was written
-    "cli_engine.py",                # passes the directory to the evaluator
-    "evaluation/evaluate.py",       # the ONLY reader
 }
 
 
@@ -46,24 +41,22 @@ def test_only_allowed_modules_reference_ground_truth():
     assert offenders == []
 
 
-def test_engine_never_mentions_ground_truth_or_imports_evaluator():
-    for p in (SRC / "engine").rglob("*.py"):
-        text = p.read_text(encoding="utf-8")
-        assert "ground_truth" not in text.lower(), p
-        assert not re.search(r"(from|import)\s+[.\w]*evaluation", text), p
-
-
 @pytest.fixture
 def home_with_ground_truth(tmp_path):
     ds = generate(n_fans=12, years=2, seed=21)
     ds.write(tmp_path / "sim", tmp_path / "ground_truth")
     conn = db.connect(tmp_path / "t.db", create=True)
     db.init_schema(conn)
-    ingest(conn, SimulatorSource(ds))
     return tmp_path, conn
 
 
-def test_engine_runs_without_touching_ground_truth(home_with_ground_truth, monkeypatch):
+def test_csv_source_refuses_ground_truth(home_with_ground_truth):
+    home, _ = home_with_ground_truth
+    with pytest.raises(GroundTruthRefused):
+        CsvSource(home / "ground_truth" / "ground_truth.csv", kind="failure")
+
+
+def test_pipeline_runs_without_touching_ground_truth(home_with_ground_truth, monkeypatch):
     home, conn = home_with_ground_truth
     touched: list[str] = []
 
@@ -71,7 +64,7 @@ def test_engine_runs_without_touching_ground_truth(home_with_ground_truth, monke
         def wrapped(path, *a, **k):
             if "ground_truth" in str(path):
                 touched.append(str(path))
-                raise AssertionError(f"engine touched ground truth: {path}")
+                raise AssertionError(f"pipeline touched ground truth: {path}")
             return fn(path, *a, **k)
         return wrapped
 
@@ -83,18 +76,20 @@ def test_engine_runs_without_touching_ground_truth(home_with_ground_truth, monke
     def read_text(self, *a, **k):
         if "ground_truth" in str(self):
             touched.append(str(self))
-            raise AssertionError(f"engine touched ground truth: {self}")
+            raise AssertionError(f"pipeline touched ground truth: {self}")
         return original_read_text(self, *a, **k)
 
     monkeypatch.setattr(Path, "read_text", read_text)
 
-    from tbfmon.engine import assess, load_engine_config, load_fleet, recommend_all
     from tbfmon.limits import load_limits
     from tbfmon.pm import data_as_of
+    from tbfmon.validate import run_checks
+    from tbfmon.views import fan_detail, fleet_rows
 
-    data = load_fleet(conn, load_limits(), data_as_of(conn))
-    cfg = load_engine_config()
-    for mode in ("full", "oof"):
-        a = assess(data, cfg, mode)
-        recommend_all(a)
+    ingest(conn, CsvSource(home / "sim"))
+    as_of = data_as_of(conn)
+    run_checks(conn, None, as_of)
+    limits = load_limits()
+    rows = fleet_rows(conn, limits, as_of)
+    fan_detail(conn, rows[0]["fan_id"], limits, as_of)
     assert touched == []
